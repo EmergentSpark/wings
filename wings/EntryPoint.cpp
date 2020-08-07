@@ -23,6 +23,8 @@
 #include <unordered_set>
 #include <iterator>
 #include <deque>
+#include <atomic>
+#include <random>
 
 #include <glm/vec3.hpp>
 #include <glm/vec2.hpp>
@@ -87,6 +89,26 @@ public:
 	const glm::vec3& getStart() const { return mStart; }
 	const glm::vec3& getDirectionAndLength() const { return mDirAndLength; }
 	const glm::vec3& getEnd() const { return mEnd; }
+};
+
+class AxisAlignedBoundingBox
+{
+private:
+	glm::vec3 mLower;
+	glm::vec3 mHigher;
+
+public:
+	AxisAlignedBoundingBox(const glm::vec3& lower, const glm::vec3& higher) : mLower(lower), mHigher(higher) {}
+
+	const glm::vec3& getLowerBound() const { return mLower; }
+	const glm::vec3& getHigherBound() const { return mHigher; }
+
+	bool intersects(const AxisAlignedBoundingBox& b)
+	{
+		return (mLower.x <= b.mHigher.x && mHigher.x >= b.mLower.x) &&
+			(mLower.y <= b.mHigher.y && mHigher.y >= b.mLower.y) &&
+			(mLower.z <= b.mHigher.z && mHigher.z >= b.mLower.z);
+	}
 };
 
 #pragma endregion
@@ -2548,6 +2570,21 @@ void renderSpacedBitmapString(float x, float y, int spacing, void* font, const c
 
 void renderString(int x, int y, void* font, const std::string& str) { renderSpacedBitmapString((float)x, (float)y, 0, font, str.c_str()); }
 
+int getSpacedStringWidth(int spacing, void* font, const char* string)
+{
+	int width = 0;
+	const char* c;
+
+	for (c = string; *c != '\0'; c++)
+	{
+		width += glutBitmapWidth(font, *c) + spacing;
+	}
+
+	return width;
+}
+
+int getStringWidth(void* font, const std::string& string) { return getSpacedStringWidth(0, font, string.c_str()); }
+
 void setOrthographicProjection() {
 
 	// switch to projection mode
@@ -2606,6 +2643,16 @@ void renderStrokeFontString(float x, float y, float z, void* font, const char* s
 	}
 
 	glPopMatrix();
+}
+
+void drawQuad2D(int x, int y, int width, int height)
+{
+	glBegin(GL_QUADS);
+	glVertex2i(x, y);
+	glVertex2i(x, y + height);
+	glVertex2i(x + width, y + height);
+	glVertex2i(x + width, y);
+	glEnd();
 }
 
 #pragma endregion
@@ -2686,26 +2733,35 @@ struct VolumeChunk
 	std::unique_ptr<VoxelVolume> mVolume;
 	std::unique_ptr<Mesh> mMesh;
 	bool mMeshNeedsUpdate = false;
+	std::unique_ptr<Mesh> mUpdatedMesh;
+	bool mUpdatingMesh = false;
+	bool mUpdatedMeshReady = false;
 
 	void render()
 	{
 		glPushMatrix();
 		glTranslatef((float)mVolume->getEnclosingRegion().getLowerCorner().x, (float)mVolume->getEnclosingRegion().getLowerCorner().y, (float)mVolume->getEnclosingRegion().getLowerCorner().z);
-		glBegin(GL_TRIANGLES);
-		for (size_t i = 0; i < mMesh->getNumIndices(); i++)
-		{
-			const Vertex& vert = mMesh->getRenderVertex(i);
-			glColor3f(vert.mColor.r, vert.mColor.g, vert.mColor.b);
-			glNormal3f(vert.mNormal.x, vert.mNormal.y, vert.mNormal.z);
-			glVertex3f(vert.mPosition.x, vert.mPosition.y, vert.mPosition.z);
-		}
-		glEnd();
-		glPopMatrix();
-	}
 
-	void extractSurfaceMesh()
-	{
-		extractVolumeSurface(mVolume.get(), mMesh.get());
+		if (mMesh.get() == 0)
+		{
+			glTranslatef(8.0f, 8.0f, 8.0f);
+			glColor4f(0.2f, 0.2f, 0.2f, 0.3f);
+			glutSolidCube(16.0f);
+		}
+		else
+		{
+			glBegin(GL_TRIANGLES);
+			for (size_t i = 0; i < mMesh->getNumIndices(); i++)
+			{
+				const Vertex& vert = mMesh->getRenderVertex(i);
+				glColor3f(vert.mColor.r, vert.mColor.g, vert.mColor.b);
+				glNormal3f(vert.mNormal.x, vert.mNormal.y, vert.mNormal.z);
+				glVertex3f(vert.mPosition.x, vert.mPosition.y, vert.mPosition.z);
+			}
+			glEnd();
+		}
+
+		glPopMatrix();
 	}
 };
 
@@ -2765,6 +2821,18 @@ const VoxelType& getVoxel(int x, int y, int z)
 const VoxelType& getVoxel(const glm::ivec3& pos) { return getVoxel(pos.x, pos.y, pos.z); }
 
 int volumeRenderDistance = 3;
+int volumeMaxSurfaceExtractionThreads = 4;
+std::atomic<int> activeSurfaceExtractionThreads = 0;
+
+void chunkSurfaceExtractProc(VolumeChunk* chunk)
+{
+	chunk->mUpdatedMesh.reset(new Mesh());
+	extractVolumeSurface(chunk->mVolume.get(), chunk->mUpdatedMesh.get());
+	chunk->mUpdatedMeshReady = true;
+	chunk->mMeshNeedsUpdate = false;
+	chunk->mUpdatingMesh = false;
+	activeSurfaceExtractionThreads--;
+}
 
 void renderChunks()
 {
@@ -2772,30 +2840,54 @@ void renderChunks()
 
 	for (auto it = mChunks.begin(); it != mChunks.end(); it++)
 	{
+		VolumeChunk* chunk = it->second.get();
+
 		// apply max render distance
-		const glm::ivec3& corner = it->second->mVolume.get()->getEnclosingRegion().getLowerCorner();
+		const glm::ivec3& corner = chunk->mVolume.get()->getEnclosingRegion().getLowerCorner();
 		glm::vec3 volumeCenterWorldPos(corner.x + 8, corner.y + 8, corner.z + 8);
 		if (glm::distance(camPos, volumeCenterWorldPos) >= (volumeRenderDistance * 16)) { continue; }
 
 		// update and render chunk geometry
-		if (it->second->mMeshNeedsUpdate)
+		if (!chunk->mUpdatingMesh)
 		{
-			// TODO: with buffered rendering, these buffers should swap flawlessly in multithreaded context
-			it->second->mMesh.reset(new Mesh());
-			it->second->extractSurfaceMesh();
-			it->second->mMeshNeedsUpdate = false;
+			if (chunk->mMeshNeedsUpdate && activeSurfaceExtractionThreads < volumeMaxSurfaceExtractionThreads)
+			{
+				activeSurfaceExtractionThreads++;
+				chunk->mUpdatingMesh = true;
+				chunk->mMesh.reset();
+				std::thread t(chunkSurfaceExtractProc, chunk);
+				t.detach();
+			}
+			// with modern buffered rendering, gpu pushes must happen on the main thread, so this is where it'd be done
+			else if (chunk->mUpdatedMeshReady)
+			{
+				chunk->mMesh = std::move(chunk->mUpdatedMesh);
+				chunk->mUpdatedMeshReady = false;
+			}
 		}
-		it->second->render();
+
+		chunk->render();
 	}
 }
+
+glm::ivec3 getVoxelChunkPos(int x, int y, int z) { return glm::ivec3(std::floorf((float)x / 16.0f), std::floorf((float)y / 16.0f), std::floorf((float)z / 16.0f)); }
+
+glm::ivec3 getVoxelChunkPos(const glm::ivec3& pos) { return getVoxelChunkPos(pos.x, pos.y, pos.z); }
 
 #pragma endregion
 
 #pragma region Maple Map 3D Processing
 
+std::random_device rd;
+std::mt19937 mt(rd());
+
+int getRandomInt() { return std::uniform_int_distribution<int>()(mt); }
+
+int getRandomInt(int min, int max) { return std::uniform_int_distribution<int>(min, max)(mt); }
+
 glm::vec3 charPos;
 
-int randomNumber(int min, int max) { return min + (rand() % (max - min)); }
+int randomNumber(int LO, int HI) { return LO + (rand()) / ((RAND_MAX / (HI - LO))); }
 
 float randf(float LO, float HI) { return LO + static_cast <float> (rand()) / (static_cast <float> (RAND_MAX / (HI - LO))); }
 
@@ -3200,130 +3292,28 @@ namespace AStar
 
 #pragma endregion
 
-#pragma region Terrain Generation
-
-bool mazeWalls[57][57][4];
-glm::ivec2 mazeCurPos;
-int mazeMoveLimit = 50;
-std::vector<glm::ivec2> mazeClearedTiles;
-
-namespace MazeWalls
-{
-	enum MazeWall
-	{
-		FORWARD,
-		RIGHT,
-		BACKWARD,
-		LEFT
-	};
-}
-typedef MazeWalls::MazeWall MazeWall;
-
-void mazeInitWalls()
-{
-	for (int w = 0; w < 57; w++)
-	{
-		for (int d = 0; d < 57; d++)
-		{
-			for (int i = 0; i < 4; i++)
-			{
-				mazeWalls[w][d][i] = true;
-			}
-		}
-	}
-}
-
-void mazeRemoveWall(MazeWall dir) { mazeWalls[mazeCurPos.x][mazeCurPos.y][dir] = false; }
-
-bool mazeCanMove(MazeWall dir)
-{
-	return !(dir == MazeWall::FORWARD && mazeCurPos.y + 1 > 56 ||
-		dir == MazeWall::RIGHT && mazeCurPos.x + 1 > 56 ||
-		dir == MazeWall::BACKWARD && mazeCurPos.y - 1 < 0 ||
-		dir == MazeWall::LEFT && mazeCurPos.x - 1 < 0);
-}
-
-void mazeMoveDirection(MazeWall dir)
-{
-	if (dir == MazeWall::FORWARD) { mazeCurPos.y++; }
-	else if (dir == MazeWall::RIGHT) { mazeCurPos.x++; }
-	else if (dir == MazeWall::BACKWARD) { mazeCurPos.y--; }
-	else if (dir == MazeWall::LEFT) { mazeCurPos.x--; }
-}
-
-MazeWall mazeGetInverseWall(MazeWall dir)
-{
-	if (dir == MazeWall::FORWARD) { return MazeWall::BACKWARD; }
-	else if (dir == MazeWall::RIGHT) { return MazeWall::LEFT; }
-	else if (dir == MazeWall::BACKWARD) { return MazeWall::FORWARD; }
-	else if (dir == MazeWall::LEFT) { return MazeWall::RIGHT; }
-}
-
-bool mazeClearPath(MazeWall dir)
-{
-	if (!mazeCanMove(dir)) { return false; }
-
-	mazeRemoveWall(dir);
-	mazeMoveDirection(dir);
-	mazeRemoveWall(mazeGetInverseWall(dir));
-	mazeClearedTiles.push_back(mazeCurPos);
-
-	return true;
-}
-
-void mazeGenerate()
-{
-	mazeInitWalls();
-	for (int curMoves = 0; curMoves < mazeMoveLimit; curMoves++)
-	{
-		MazeWall direction = (MazeWall)randomNumber(0, 3);
-		int len = randomNumber(2, 10);
-
-		for (int i = 0; i < len; i++)
-		{
-			if (!mazeClearPath(direction)) { break; }
-		}
-	}
-}
-
-void generateMazeWallVoxels(int baseX, int baseZ, MazeWall wall)
-{
-	for (int i = 0; i < 7; i++)
-	{
-		setVoxel(
-			baseX + (wall == MazeWall::FORWARD || wall == MazeWall::BACKWARD ? i : 0) + (wall == MazeWall::RIGHT ? 6 : 0),
-			0,
-			baseZ + (wall == MazeWall::LEFT || wall == MazeWall::RIGHT ? i : 0) + (wall == MazeWall::FORWARD ? 6 : 0),
-			randomNumber(0, 15),
-			randomNumber(0, 75),
-			randomNumber(0, 15)
-		);
-	}
-}
-
 bool invalidPathfindNode(const glm::ivec2& node)
 {
-	if (node.x < 0 || node.y < 0 || node.x >= 57 || node.y >= 57) { return true; }
-	if (mazeWalls[node.x][node.y][0] && mazeWalls[node.x][node.y][1] && mazeWalls[node.x][node.y][2] && mazeWalls[node.x][node.y][3]) { return true; }
-	return false;
+	return false; // temp
+
+	//if (node.x < 0 || node.y < 0 || node.x >= 57 || node.y >= 57) { return true; }
+	//if (mazeWalls[node.x][node.y][0] && mazeWalls[node.x][node.y][1] && mazeWalls[node.x][node.y][2] && mazeWalls[node.x][node.y][3]) { return true; }
+	//return false;
 }
 
 glm::ivec2 worldToMazePos(const glm::vec3& worldPos) { return glm::ivec2((int)std::floorf((worldPos.x + 200.0f) / 7.0f), (int)std::floorf((worldPos.z + 200.0f) / 7.0f)); }
 
 glm::vec3 mazeToWorldPos(const glm::ivec2& pos) { return glm::vec3(-200 + (pos.x * 7) + 3, 0.0f, -200 + (pos.y * 7) + 3); }
 
-#pragma endregion
-
 #pragma region Combat Engine
 
 class ICombatSkill
 {
 private:
-	int mId;
 	std::string mName;
 
 public:
-	ICombatSkill(int id, const std::string& name) : mId(id), mName(name) {}
+	ICombatSkill(const std::string& name) : mName(name) {}
 
 	const std::string& getName() const { return mName; }
 
@@ -3331,6 +3321,8 @@ public:
 };
 
 std::unordered_map<int, std::unique_ptr<ICombatSkill>> loadedSkills;
+
+void registerSkill(int id, ICombatSkill* skill) { loadedSkills[id].reset(skill); }
 
 class CombatEntity;
 
@@ -3342,10 +3334,28 @@ public:
 
 class CombatEntity
 {
-private:
+protected:
+	glm::vec3 mPosition;
+
 	std::vector<ICombatEntityListener*> mListeners;
 
 public:
+	const glm::vec3& getPosition() const { return mPosition; }
+	void setPosition(const glm::vec3& pos) { mPosition = pos; }
+
+	AxisAlignedBoundingBox getAxisAlignedBoundingBox()
+	{
+		glm::vec3 lowerLeft(getPosition());
+		glm::vec3 upperRight(lowerLeft);
+		lowerLeft.x--;
+		lowerLeft.z--;
+		upperRight.x++;
+		upperRight.z++;
+		upperRight.y += 2;
+
+		return AxisAlignedBoundingBox(lowerLeft, upperRight);
+	}
+
 	void addListener(ICombatEntityListener* listener) { mListeners.push_back(listener); }
 
 	void onKilled() { for (auto& listener : mListeners) { listener->onKilled(this); } }
@@ -3391,6 +3401,102 @@ float playerVerticalVelocity = 0.0f;
 
 glm::ivec3 getPlayerPositionVoxelPos() { return glm::ivec3((int)(cx < 0 ? std::ceilf(cx) - 1 : std::floorf(cx)), (int)(cy < 0 ? std::ceilf(cy) - 1 : std::floorf(cy)), (int)(cz < 0 ? std::ceilf(cz) - 1 : std::floorf(cz))); }
 
+// apply physics based on voxel terrain
+class PhysicalEnvironment
+{
+private:
+	glm::ivec3 curVoxelPos;
+
+public:
+	void preMove(float elapsed)
+	{
+		curVoxelPos = getPlayerPositionVoxelPos();
+		const VoxelType& curVoxel = getVoxel(curVoxelPos);
+
+		// process jumping and gravity
+		glm::ivec3 curVoxelUnderPos(curVoxelPos.x, curVoxelPos.y - 1, curVoxelPos.z);
+		const VoxelType& curVoxelUnder = getVoxel(curVoxelUnderPos);
+
+		// check if player is standing on solid ground currently. STRANGE BEHAVIOR FOR COLLISIONS AT cy < 0. NEEDS FIXING.
+		bool playerCurrentlyOnGround = curVoxelUnder.a != 0 && (cy < 0 ? std::floorf(cy) : cy) == curVoxelPos.y;
+
+		if (playerCurrentlyOnGround != playerOnGround)
+		{
+			playerFallTime = 0;
+			playerOnGround = playerCurrentlyOnGround;
+			if (playerOnGround) { playerVerticalVelocity = 0; }
+		}
+
+		// initiate jumps if on solid ground
+		if (playerJumpRequested)
+		{
+			playerJumpRequested = false;
+			if (playerOnGround)
+			{
+				playerJumpTime = 0;
+				playerJumpProcessing = true;
+			}
+		}
+
+		// process jump acceleration changes
+		if (playerJumpProcessing)
+		{
+			playerJumpTime = std::min(playerJumpTime + (elapsed * 2), 1.0f);
+			float jumpAcceleration = glm::mix(3.5f, 0.0f, playerJumpTime);
+			float frameAcceleration = jumpAcceleration * (elapsed * 2);
+			playerVerticalVelocity = frameAcceleration;
+
+			if (playerJumpTime == 1.0f) { playerJumpProcessing = false; }
+		}
+
+		// apply gravity
+		if (!playerOnGround && !playerJumpProcessing)
+		{
+			playerFallTime += elapsed;
+			float fallAcceleration = std::max(-3.130495f * playerFallTime, -7.280109f); // use real world acceleration and terminal velocity, 9.8m2 and 53m2
+			playerVerticalVelocity += fallAcceleration * elapsed;
+		}
+
+		// apply vertical velocity
+		cy += playerVerticalVelocity;
+
+		if (curVoxelUnder.a != 0 && cy < curVoxelPos.y) { cy = (float)curVoxelPos.y; }
+	}
+
+	void postMove()
+	{
+		glm::ivec3 newVoxelPos = getPlayerPositionVoxelPos();
+		const VoxelType& newVoxel = getVoxel(newVoxelPos);
+
+		// DEBUG: draw player position voxel
+		glPushMatrix();
+		glTranslatef((float)newVoxelPos.x, (float)newVoxelPos.y, (float)newVoxelPos.z);
+		glTranslatef(0.5f, 0.5f, 0.5f);
+		glColor3f(0.5f, 0.5f, 0.5f);
+		glutWireCube(1.0f);
+		glPopMatrix();
+
+		if (newVoxelPos != curVoxelPos)
+		{
+			//printf("=== CHANGED VOXELS!! ===\n");
+			//printf("old: %d, %d, %d | new: %d, %d, %d\n", curVoxelPos.x, curVoxelPos.y, curVoxelPos.z, newVoxelPos.x, newVoxelPos.y, newVoxelPos.z);
+			if (newVoxel.a != 0) // isn't air voxel
+			{
+				glm::vec3 oldLower((float)curVoxelPos.x + 0.0001f, (float)curVoxelPos.y + 0.0001f, (float)curVoxelPos.z + 0.0001f);
+				glm::vec3 oldHigher(oldLower.x + 0.9998f, oldLower.y + 0.9998f, oldLower.z + 0.9998f);
+
+				//printf("=== VOXEL COLLISION!! ===\n");
+				//printf("old bounds: %f, %f, %f to %f, %f, %f\n", oldLower.x, oldLower.y, oldLower.z, oldHigher.x, oldHigher.y, oldHigher.z);
+
+				if (cx < oldLower.x && getVoxel(newVoxelPos.x, 0, curVoxelPos.z).a != 0) { cx = oldLower.x; }
+				if (cx > oldHigher.x && getVoxel(newVoxelPos.x, 0, curVoxelPos.z).a != 0) { cx = oldHigher.x; }
+				if (cz < oldLower.z && getVoxel(curVoxelPos.x, 0, newVoxelPos.z).a != 0) { cz = oldLower.z; }
+				if (cz > oldHigher.z && getVoxel(curVoxelPos.x, 0, newVoxelPos.z).a != 0) { cz = oldHigher.z; }
+			}
+		}
+	}
+};
+
 void updatePlayer(float elapsed)
 {
 	// apply mp regen
@@ -3415,98 +3521,161 @@ void updatePlayer(float elapsed)
 	}
 	else { playerSamePosTime += elapsed; }
 
-	// apply physics based on voxel terrain
-	glm::ivec3 curVoxelPos = getPlayerPositionVoxelPos();
-	const VoxelType& curVoxel = getVoxel(curVoxelPos);
-
-	// process jumping and gravity
-	glm::ivec3 curVoxelUnderPos(curVoxelPos.x, curVoxelPos.y - 1, curVoxelPos.z);
-	const VoxelType& curVoxelUnder = getVoxel(curVoxelUnderPos);
-
-	// check if player is standing on solid ground currently
-	bool playerCurrentlyOnGround = curVoxelUnder.a != 0 && cy == curVoxelPos.y;
-
-	if (playerCurrentlyOnGround != playerOnGround)
-	{
-		playerFallTime = 0;
-		playerOnGround = playerCurrentlyOnGround;
-		if (playerOnGround) { playerVerticalVelocity = 0; }
-	}
-
-	// initiate jumps if on solid ground
-	if (playerJumpRequested)
-	{
-		playerJumpRequested = false;
-		if (playerOnGround)
-		{
-			playerJumpTime = 0;
-			playerJumpProcessing = true;
-		}
-	}
-
-	// process jump acceleration changes
-	if (playerJumpProcessing)
-	{
-		playerJumpTime = std::min(playerJumpTime + (elapsed * 2), 1.0f);
-		float jumpAcceleration = glm::mix(3.5f, 0.0f, playerJumpTime);
-		float frameAcceleration = jumpAcceleration * (elapsed * 2);
-		playerVerticalVelocity = frameAcceleration;
-
-		if (playerJumpTime == 1.0f) { playerJumpProcessing = false; }
-	}
-
-	// apply gravity
-	if (!playerOnGround && !playerJumpProcessing)
-	{
-		playerFallTime += elapsed;
-		float fallAcceleration = std::max(-3.130495f * playerFallTime, -7.280109f) / 333.33f; // use real world acceleration and terminal velocity, 9.8m2 and 53m2
-		playerVerticalVelocity += fallAcceleration;
-	}
-
-	// apply vertical velocity
-	cy += playerVerticalVelocity;
-
-	if (curVoxelUnder.a != 0 && cy < curVoxelPos.y) { cy = (float)curVoxelPos.y; }
-
-	// temporarily do hard camera movement here, so we can apply physics & stats easily
-	updateCamera(elapsed);
-
-	glm::ivec3 newVoxelPos = getPlayerPositionVoxelPos();
-	const VoxelType& newVoxel = getVoxel(newVoxelPos);
-
-	// DEBUG: draw player position voxel
-	glPushMatrix();
-	glTranslatef((float)newVoxelPos.x, (float)newVoxelPos.y, (float)newVoxelPos.z);
-	glTranslatef(0.5f, 0.5f, 0.5f);
-	glColor3f(0.5f, 0.5f, 0.5f);
-	glutWireCube(1.0f);
-	glPopMatrix();
-
-	if (newVoxelPos != curVoxelPos)
-	{
-		//printf("=== CHANGED VOXELS!! ===\n");
-		//printf("old: %d, %d, %d | new: %d, %d, %d\n", curVoxelPos.x, curVoxelPos.y, curVoxelPos.z, newVoxelPos.x, newVoxelPos.y, newVoxelPos.z);
-		if (newVoxel.a != 0) // isn't air voxel
-		{
-			glm::vec3 oldLower((float)curVoxelPos.x + 0.0001f, (float)curVoxelPos.y + 0.0001f, (float)curVoxelPos.z + 0.0001f);
-			glm::vec3 oldHigher(oldLower.x + 0.9998f, oldLower.y + 0.9998f, oldLower.z + 0.9998f);
-
-			//printf("=== VOXEL COLLISION!! ===\n");
-			//printf("old bounds: %f, %f, %f to %f, %f, %f\n", oldLower.x, oldLower.y, oldLower.z, oldHigher.x, oldHigher.y, oldHigher.z);
-
-			if (cx < oldLower.x && getVoxel(newVoxelPos.x, 0, curVoxelPos.z).a != 0) { cx = oldLower.x; }
-			if (cx > oldHigher.x && getVoxel(newVoxelPos.x, 0, curVoxelPos.z).a != 0) { cx = oldHigher.x; }
-			if (cz < oldLower.z && getVoxel(curVoxelPos.x, 0, newVoxelPos.z).a != 0) { cz = oldLower.z; }
-			if (cz > oldHigher.z && getVoxel(curVoxelPos.x, 0, newVoxelPos.z).a != 0) { cz = oldHigher.z; }
-		}
-	}
+	// apply camera movement with physics
+	PhysicalEnvironment penv;
+	penv.preMove(elapsed);
+	updateCamera(elapsed); // temporarily do hard camera movement here, so we can apply physics & stats easily
+	penv.postMove();
 
 	// update statistics
 	playerTotalTravelDistance += glm::distance(glm::vec3(cx, 0.0f, cz), playerCurrentPos);
 }
 
-std::vector<int> playerInventoryItems;
+#pragma region Items & Inventory
+
+enum class InventoryType
+{
+	UNDEFINED,
+	EQUIP,
+	USE,
+	SETUP,
+	ETC,
+	CASH,
+	EQUIPPED = -1
+};
+
+InventoryType getItemInventoryType(int itemId)
+{
+	InventoryType ret = InventoryType::UNDEFINED;
+
+	int type = itemId / 1000000;
+	if (type >= 1 && type <= 5) { ret = (InventoryType)type; }
+
+	return ret;
+}
+
+class Item
+{
+private:
+	int mId;
+	short mPosition;
+	short mQuantity;
+
+public:
+	Item(int id) : mId(id), mPosition(0), mQuantity(1) {}
+	Item(int id, short quantity) : mId(id), mPosition(0), mQuantity(quantity) {}
+	Item(int id, short position, short quantity) : mId(id), mPosition(position), mQuantity(quantity) {}
+
+	const int& getItemId() { return mId; }
+	const short& getPosition() { return mPosition; }
+	const short& getQuantity() { return mQuantity; }
+
+	void setPosition(short position) { mPosition = position; }
+	void setQuantity(short quantity) { mQuantity = quantity; }
+
+	InventoryType getInventoryType() { return getItemInventoryType(mId); }
+};
+
+class Inventory
+{
+private:
+	std::unordered_map<short, std::unique_ptr<Item>> mItems;
+	short mSlotLimit;
+	InventoryType mType;
+
+	short getNextFreeSlot()
+	{
+		if (isFull()) { return -1; }
+
+		for (short i = 1; i <= mSlotLimit; i++)
+		{
+			if (mItems.count(i) == 0) { return i; }
+		}
+
+		return -1;
+	}
+
+	short addSlot(Item* item)
+	{
+		if (item == 0) { return -1; }
+
+		short slotId = getNextFreeSlot();
+		if (slotId < 0) { return -1; }
+
+		mItems[slotId].reset(item);
+
+		return slotId;
+	}
+
+	void removeSlot(short slot) { mItems.erase(slot); }
+
+public:
+	Inventory(InventoryType type, short slotLimit) : mType(type), mSlotLimit(slotLimit) {}
+
+	const short& getSlotLimit() const { return mSlotLimit; }
+	const InventoryType& getType() const { return mType; }
+
+	Item* getItem(short slot) { return mItems.count(slot) != 0 ? mItems[slot].get() : 0; }
+
+	bool isFull() { return (short)mItems.size() >= mSlotLimit; }
+
+	short addItem(Item* item)
+	{
+		short slotId = addSlot(item);
+		if (slotId == -1) { return -1; }
+		item->setPosition(slotId);
+		return slotId;
+	}
+
+	void removeItem(short slot, short quantity, bool allowZero)
+	{
+		Item* item = getItem(slot);
+		if (item == 0) { return; }
+		item->setQuantity(item->getQuantity() - quantity);
+		if (item->getQuantity() < 0) { item->setQuantity(0); }
+		if (item->getQuantity() == 0 && !allowZero) { removeSlot(slot); }
+	}
+
+	void removeItem(short slot) { removeItem(slot, 1, false); }
+
+	int countById(int itemId)
+	{
+		int qty = 0;
+		for (auto& item : mItems)
+		{
+			if (item.second->getItemId() == itemId) { qty += item.second->getQuantity(); }
+		}
+		return qty;
+	}
+
+	short getNumFreeSlot()
+	{
+		if (isFull()) { return 0; }
+
+		short free = 0;
+		for (short i = 1; i <= mSlotLimit; i++)
+		{
+			if (mItems.count(i) == 0) { free++; }
+		}
+		return free;
+	}
+
+	Item* findById(int itemId)
+	{
+		for (auto& item : mItems)
+		{
+			if (item.second->getItemId() == itemId) { return item.second.get(); }
+		}
+		return 0;
+	}
+};
+
+Inventory playerInventoryItems(InventoryType::EQUIP, 36);
 std::vector<int> playerEquipmentItems;
+
+#pragma endregion
+
+#pragma region Skills
 
 class LearnedSkill
 {
@@ -3550,6 +3719,8 @@ void playerSkillGainExp(int id, int exp)
 	}
 }
 
+#pragma endregion
+
 CombatEntity* playerEntity = new CombatEntity();
 
 #pragma endregion
@@ -3585,8 +3756,6 @@ void drawSnowMan() {
 class Enemy : public CombatEntity
 {
 private:
-	glm::vec3 mPosition;
-	
 	glm::vec3 mMoveDirection;
 	std::vector<glm::ivec2> mPathfindPath;
 	long long mLastPathfindCalcTime = 0;
@@ -3611,7 +3780,7 @@ private:
 	}
 
 public:
-	Enemy(const glm::vec3& pos) : mPosition(pos) {}
+	Enemy(const glm::vec3& pos) { setPosition(pos); }
 
 	void update(float elapsed)
 	{
@@ -3695,8 +3864,6 @@ public:
 		glutWireCube(1.0f);
 		glPopMatrix();
 	}
-
-	const glm::vec3& getPosition() const { return mPosition; }
 
 	int getHP() { return mHP; }
 	void setHP(int hp) { mHP = hp; }
@@ -3782,19 +3949,162 @@ std::unique_ptr<ICombatEntityListener> enemyGiveExpListener;
 
 #pragma endregion
 
+#pragma region Item Information
+
+class ItemInfo
+{
+public:
+	virtual std::string getName() = 0;
+	virtual std::string getDescription() { return "No description."; }
+	virtual void drawIcon() = 0;
+	virtual void onUse() {}
+};
+
+class Item_BasicRaycaster : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "Basic Raycaster"; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(225));
+		drawQuad2D(11, 15, 8, 19);
+		drawQuad2D(19, 15, 19, 8);
+		drawQuad2D(19, 25, 3, 3);
+	}
+};
+
+class Item_PowerRaycaster : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "Power Raycaster"; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(25), BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(201));
+		drawQuad2D(11, 15, 8, 19);
+		drawQuad2D(19, 15, 19, 8);
+		drawQuad2D(19, 25, 3, 3);
+	}
+};
+
+class Item_BlastRaycaster : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "Blast Raycaster"; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(79), BYTE_TO_FLOAT_COLOR(56));
+		drawQuad2D(11, 15, 8, 19);
+		drawQuad2D(19, 15, 19, 8);
+		drawQuad2D(19, 25, 3, 3);
+	}
+};
+
+class Item_BasicCharger : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "Basic Charger"; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(225));
+		drawQuad2D(11, 15, 8, 19);
+		drawQuad2D(19, 15, 19, 8);
+		drawQuad2D(19, 25, 3, 3);
+		drawQuad2D(29, 23, 9, 11);
+		drawQuad2D(19, 31, 10, 3);
+	}
+};
+
+class Item_PowerCharger : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "Power Charger"; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(25), BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(201));
+		drawQuad2D(11, 15, 8, 19);
+		drawQuad2D(19, 15, 19, 8);
+		drawQuad2D(19, 25, 3, 3);
+		drawQuad2D(29, 23, 9, 11);
+		drawQuad2D(19, 31, 10, 3);
+	}
+};
+
+class Item_BlastCharger : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "Blast Charger"; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(79), BYTE_TO_FLOAT_COLOR(56));
+		drawQuad2D(11, 15, 8, 19);
+		drawQuad2D(19, 15, 19, 8);
+		drawQuad2D(19, 25, 3, 3);
+		drawQuad2D(29, 23, 9, 11);
+		drawQuad2D(19, 31, 10, 3);
+	}
+};
+
+class Item_RedPotion : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "Red Potion"; }
+	virtual std::string getDescription() { return "Restores 10 HP."; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
+		drawQuad2D(12, 12, 24, 24);
+		drawQuad2D(18, 10, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
+		drawQuad2D(18, 8, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
+		drawQuad2D(20, 12, 8, 2);
+		drawQuad2D(14, 14, 20, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(142), BYTE_TO_FLOAT_COLOR(42), BYTE_TO_FLOAT_COLOR(54));
+		drawQuad2D(14, 16, 20, 18);
+	}
+	virtual void onUse()
+	{
+		playerHP = std::min(playerHP + 10, playerMaxHP);
+	}
+};
+
+class Item_BluePotion : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "Blue Potion"; }
+	virtual std::string getDescription() { return "Restores 10 MP."; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
+		drawQuad2D(12, 12, 24, 24);
+		drawQuad2D(18, 10, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
+		drawQuad2D(18, 8, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
+		drawQuad2D(20, 12, 8, 2);
+		drawQuad2D(14, 14, 20, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(50), BYTE_TO_FLOAT_COLOR(80), BYTE_TO_FLOAT_COLOR(140));
+		drawQuad2D(14, 16, 20, 18);
+	}
+	virtual void onUse()
+	{
+		playerMP = std::min(playerMP + 10, playerMaxMP);
+	}
+};
+
+std::unordered_map<int, std::unique_ptr<ItemInfo>> registeredItems;
+
+void registerItem(int id, ItemInfo* info) { registeredItems[id].reset(info); }
+ItemInfo* getItemInfo(int id) { return registeredItems.count(id) > 0 ? registeredItems[id].get() : 0; }
+
+#pragma endregion
+
 #pragma region User Interface
 
-void drawQuad2D(int x, int y, int width, int height)
-{
-	glBegin(GL_QUADS);
-	glVertex2i(x, y);
-	glVertex2i(x, y + height);
-	glVertex2i(x + width, y + height);
-	glVertex2i(x + width, y);
-	glEnd();
-}
+glm::ivec2 currentMousePos;
 
 std::string to_string(const glm::vec3& v) { return std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z); }
+std::string to_string(const glm::ivec3& v) { return std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z); }
 
 int calcProgressWidth(int val, int valMax, int fullSize) { return (int)(((float)val / (float)valMax) * (float)fullSize); }
 
@@ -3836,194 +4146,354 @@ void updateInformationHistory()
 
 #pragma endregion
 
-bool inventoryVisible = false;
+#pragma region UI Window Core
 
-void drawInventoryWindow()
+class UIWindow
 {
-	if (!inventoryVisible) { return; }
+private:
+	glm::ivec2 mPosition;
+	glm::ivec2 mSize;
+	std::string mTitle;
+	bool mVisible = false;
+	glm::ivec2 mClientAreaOffset = glm::ivec2(5, 25);
 
-	glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-	drawQuad2D(95, 95, 195, 340);
-	glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-	drawQuad2D(100, 100, 185, 330);
-	glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
-	renderString(150, 120, GLUT_BITMAP_HELVETICA_18, "Inventory");
+protected:
+	void quad(int x, int y, int width, int height) { drawQuad2D(x, y, width, height); }
+	void text(int x, int y, void* font, const std::string& str) { renderString(mPosition.x + mClientAreaOffset.x + x, mPosition.y + mClientAreaOffset.y + y, font, str); }
 
-	for (unsigned int i = 0; i < playerInventoryItems.size(); i++)
+	void pushTransformMatrix()
 	{
-		int row = i / 6;
-		int col = i % 6;
-		glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-		drawQuad2D(105 + (col * 29), 125 + (row * 29), 25, 25);
-		glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-		renderString(105 + (col * 29), 140 + (row * 29), GLUT_BITMAP_HELVETICA_18, std::to_string(playerInventoryItems[i]));
+		glPushMatrix();
+		glTranslatef((float)(mPosition.x + mClientAreaOffset.x), (float)(mPosition.y + mClientAreaOffset.y), 0.0f);
 	}
-}
 
-void onInventoryWindowClick(int x, int y)
-{
-	if (!inventoryVisible) { return; }
-
-	glm::vec2 curPos(x, y);
-
-	for (unsigned int i = 0; i < playerInventoryItems.size(); i++)
+	void popTransformMatrix()
 	{
-		int row = i / 6;
-		int col = i % 6;
-		glm::vec2 low(105 + (col * 29), 125 + (row * 29));
-		glm::vec2 high(low.x + 25, low.y + 25);
-		
-		if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+		glPopMatrix();
+	}
+
+	virtual void draw() = 0;
+	virtual void click(int x, int y) {}
+	virtual void mouseMove(int x, int y) {}
+
+public:
+	UIWindow(const glm::ivec2& pos, const glm::ivec2& size, const std::string& title) : mPosition(pos), mSize(size), mTitle(title) {}
+
+	const glm::ivec2& getPosition() const { return mPosition; }
+	void setPosition(const glm::ivec2& pos) { mPosition = pos; }
+	const glm::ivec2& getSize() const { return mSize; }
+	const std::string& getTitle() const { return mTitle; }
+	const bool& getVisible() const { return mVisible; }
+	void setVisible(bool visible) { mVisible = visible; }
+
+	void onDraw()
+	{
+		if (!mVisible) { return; }
+
+		glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
+		drawQuad2D(mPosition.x, mPosition.y, mSize.x, mSize.y);
+		glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
+		drawQuad2D(mPosition.x + 5, mPosition.y + 5, mSize.x - 10, mSize.y - 10);
+		drawQuad2D(mPosition.x + 10, mPosition.y + 7, mSize.x - 40, 20); // title bar bg
+		glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
+		renderString(mPosition.x + 5 + (mSize.x / 2) - (getStringWidth(GLUT_BITMAP_HELVETICA_18, mTitle) / 2), mPosition.y + 5 + 20, GLUT_BITMAP_HELVETICA_18, mTitle);
+
+		// x button
+		glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
+		drawQuad2D(mPosition.x + mSize.x - 26, mPosition.y + 7, 19, 20);
+		glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
+		renderString(mPosition.x + mSize.x - 21, mPosition.y + 7 + 15, GLUT_BITMAP_HELVETICA_18, "x");
+
+		pushTransformMatrix();
+		draw();
+		popTransformMatrix();
+	}
+
+	bool onClick(int x, int y)
+	{
+		if (!mVisible) { return false; }
+
+		if (x >= mPosition.x && x <= mPosition.x + mSize.x && y >= mPosition.y && y <= mPosition.y + mSize.y)
 		{
-			addInformationHistory("Click on inventory item " + std::to_string(i));
-			int itemId = playerInventoryItems[i];
-			playerInventoryItems.erase(playerInventoryItems.begin() + i);
-			playerEquipmentItems.push_back(itemId);
-			// TODO: dont add skill if already known!
-			// TODO: should be skill id taught by item with given item id
-			playerSkills.push_back(std::unique_ptr<LearnedSkill>(new LearnedSkill(itemId, 1, 0)));
-			addInformationHistory("Learned skill (" + loadedSkills[itemId]->getName() + ")");
+			// toggle visiblity on x button press
+			glm::ivec2 xbPos(mPosition.x + mSize.x - 26, mPosition.y + 7);
+			if (x >= xbPos.x && y >= xbPos.y && x <= xbPos.x + 19 && y <= xbPos.y + 20) { mVisible = false; }
+			else { click(x - mPosition.x - mClientAreaOffset.x, y - mPosition.y - mClientAreaOffset.y); }
+
+			return true;
+		}
+
+		return false;
+	}
+
+	void onMouseMove()
+	{
+		if (!mVisible) { return; }
+
+		mouseMove(currentMousePos.x - mPosition.x - mClientAreaOffset.x, currentMousePos.y - mPosition.y - mClientAreaOffset.y);
+	}
+};
+
+std::vector<std::unique_ptr<UIWindow>> uiWindows;
+
+void addUIWindow(UIWindow* window) { uiWindows.push_back(std::unique_ptr<UIWindow>(window)); }
+
+UIWindow* getUIWindowByTitle(const std::string& title)
+{
+	UIWindow* ret = 0;
+	for (auto& window : uiWindows)
+	{
+		if (window->getTitle() == title)
+		{
+			ret = window.get();
 			break;
 		}
 	}
+	return ret;
 }
 
-bool equipmentVisible = false;
+#pragma endregion
 
-void drawEquipmentWindow()
+class InventoryWindow : public UIWindow
 {
-	if (!equipmentVisible) { return; }
-
-	glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-	drawQuad2D(495, 95, 195, 340);
-	glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-	drawQuad2D(500, 100, 185, 330);
-	glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
-	renderString(550, 120, GLUT_BITMAP_HELVETICA_18, "Equipment");
-
-	for (unsigned int i = 0; i < playerEquipmentItems.size(); i++)
+protected:
+	virtual void draw()
 	{
-		int row = i / 6;
-		int col = i % 6;
-		glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-		drawQuad2D(505 + (col * 29), 125 + (row * 29), 25, 25);
-		glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-		renderString(505 + (col * 29), 140 + (row * 29), GLUT_BITMAP_HELVETICA_18, std::to_string(playerEquipmentItems[i]));
-	}
-}
-
-void onEquipmentWindowClick(int x, int y)
-{
-	if (!equipmentVisible) { return; }
-
-	glm::vec2 curPos(x, y);
-
-	for (unsigned int i = 0; i < playerEquipmentItems.size(); i++)
-	{
-		int row = i / 6;
-		int col = i % 6;
-		glm::vec2 low(505 + (col * 29), 125 + (row * 29));
-		glm::vec2 high(low.x + 25, low.y + 25);
-
-		if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+		for (short i = 0; i < playerInventoryItems.getSlotLimit(); i++)
 		{
-			addInformationHistory("Click on equipment item " + std::to_string(i));
-			playerInventoryItems.push_back(playerEquipmentItems[i]);
-			playerEquipmentItems.erase(playerEquipmentItems.begin() + i);
-			break;
+			int row = i / 6;
+			int col = i % 6;
+
+			short slot = i + 1;
+			Item* item = playerInventoryItems.getItem(slot);
+
+			glColor4f(0.0f, 0.0f, 0.0f, item ? 0.75f : 0.25f);
+			drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
+			if (item)
+			{
+				glColor4f(1.0f, 1.0f, 1.0f, 0.25f);
+				text(5 + (col * 52), 5 + (row * 52) + 13, GLUT_BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
+
+				// show quantity for non-equips
+				if (item->getInventoryType() != InventoryType::EQUIP)
+				{
+					glColor3f(1.0f, 1.0f, 1.0f);
+					std::string quantityStr = std::to_string(item->getQuantity());
+					text(5 + (col * 52) + 45 - getStringWidth(GLUT_BITMAP_HELVETICA_12, quantityStr), 5 + (row * 52) + 45, GLUT_BITMAP_HELVETICA_12, quantityStr);
+				}
+
+				// draw icon if loaded
+				ItemInfo* info = getItemInfo(item->getItemId());
+				if (info)
+				{
+					glPushMatrix();
+					glTranslatef((float)(5 + (col * 52)), (float)(5 + (row * 52)), 0.0f);
+					info->drawIcon();
+					glPopMatrix();
+				}
+			}
 		}
 	}
-}
 
-bool skillsWindowVisible = false;
-
-void drawSkillsWindow()
-{
-	if (!skillsWindowVisible) { return; }
-
-	glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-	drawQuad2D(795, 95, 395, 340);
-	glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-	drawQuad2D(800, 100, 385, 330);
-	glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
-	renderString(975, 120, GLUT_BITMAP_HELVETICA_18, "Skills");
-
-	for (unsigned int i = 0; i < playerSkills.size(); i++)
+	virtual void click(int x, int y)
 	{
-		LearnedSkill* sInfo = playerSkills[i].get();
+		glm::ivec2 curPos(x, y);
 
-		int y = 120 + (i * 29);
+		for (short i = 0; i < playerInventoryItems.getSlotLimit(); i++)
+		{
+			int row = i / 6;
+			int col = i % 6;
+			glm::ivec2 low(5 + (col * 52), 5 + (row * 52));
+			glm::ivec2 high(low.x + 48, low.y + 48);
 
-		glColor4f(0.0f, 1.0f, 0.0f, 0.2f);
-		drawQuad2D(805, y, 375, 25);
-		glColor4f(0.0f, 1.0f, 0.0f, 0.8f);
-		drawQuad2D(805, y, calcProgressWidth(sInfo->getExp(), sInfo->getLevelUpExp(), 375), 25);
-		glColor3f(0.0f, 0.0f, 0.0f);
-		renderString(805, y + 20, GLUT_BITMAP_HELVETICA_18, loadedSkills[sInfo->getId()]->getName());
-		renderString(1025, y + 20, GLUT_BITMAP_HELVETICA_18, "Lv. " + std::to_string(sInfo->getLevel()) + " (" + std::to_string(sInfo->getExp()) + " / " + std::to_string(sInfo->getLevelUpExp()) + ")");
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				short slot = i + 1;
+
+				addInformationHistory("Click on inventory slot " + std::to_string(slot));
+
+				Item* item = playerInventoryItems.getItem(slot);
+				if (item)
+				{
+					InventoryType type = item->getInventoryType();
+
+					if (type == InventoryType::EQUIP)
+					{
+						playerEquipmentItems.push_back(item->getItemId());
+
+						// TODO: dont add skill if already known!
+						// TODO: should be skill id taught by item with given item id
+						playerSkills.push_back(std::unique_ptr<LearnedSkill>(new LearnedSkill(item->getItemId(), 1, 0)));
+						addInformationHistory("Learned skill (" + loadedSkills[item->getItemId()]->getName() + ")");
+
+						playerInventoryItems.removeItem(slot);
+					}
+					else if (type == InventoryType::USE)
+					{
+						getItemInfo(item->getItemId())->onUse();
+						playerInventoryItems.removeItem(slot);
+					}
+				}
+				break;
+			}
+		}
 	}
-}
 
-bool shopVisible = false;
+	virtual void mouseMove(int x, int y)
+	{
+		glm::ivec2 curPos(x, y);
+
+		for (short i = 0; i < playerInventoryItems.getSlotLimit(); i++)
+		{
+			int row = i / 6;
+			int col = i % 6;
+			glm::ivec2 low(5 + (col * 52), 5 + (row * 52));
+			glm::ivec2 high(low.x + 48, low.y + 48);
+
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				short slot = i + 1;
+				Item* item = playerInventoryItems.getItem(slot);
+				if (item)
+				{
+					pushTransformMatrix();
+					glColor4f(0.25f, 0.25f, 0.25f, 0.9f);
+					quad(curPos.x + 20, curPos.y + 20, 150, 80);
+					glColor3f(1.0f, 1.0f, 1.0f);
+					ItemInfo* info = getItemInfo(item->getItemId());
+					if (info)
+					{
+						text(curPos.x + 23, curPos.y + 23 + 18, GLUT_BITMAP_HELVETICA_18, info->getName());
+						text(curPos.x + 23, curPos.y + 23 + 18 + 3 + 12, GLUT_BITMAP_HELVETICA_12, info->getDescription());
+					}
+					else
+					{
+						text(curPos.x + 23, curPos.y + 23 + 12, GLUT_BITMAP_HELVETICA_12, "Item information not loaded.");
+					}
+					popTransformMatrix();
+				}
+				break;
+			}
+		}
+	}
+
+public:
+	InventoryWindow() : UIWindow(glm::ivec2(95, 95), glm::ivec2(330, 345), "Inventory") {}
+};
+
+class EquipmentWindow : public UIWindow
+{
+protected:
+	virtual void draw()
+	{
+		for (unsigned int i = 0; i < playerEquipmentItems.size(); i++)
+		{
+			int row = i / 6;
+			int col = i % 6;
+			glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
+			quad(5 + (col * 29), 5 + (row * 29), 25, 25);
+			glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
+			text(5 + (col * 29), 25 + (row * 29), GLUT_BITMAP_HELVETICA_18, std::to_string(playerEquipmentItems[i]));
+		}
+	}
+
+	virtual void click(int x, int y)
+	{
+		glm::vec2 curPos(x, y);
+
+		for (unsigned int i = 0; i < playerEquipmentItems.size(); i++)
+		{
+			int row = i / 6;
+			int col = i % 6;
+			glm::vec2 low(5 + (col * 29), 5 + (row * 29));
+			glm::vec2 high(low.x + 25, low.y + 25);
+
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				addInformationHistory("Click on equipment item " + std::to_string(i));
+				playerInventoryItems.addItem(new Item(playerEquipmentItems[i]));
+				playerEquipmentItems.erase(playerEquipmentItems.begin() + i);
+				break;
+			}
+		}
+	}
+
+public:
+	EquipmentWindow() : UIWindow(glm::ivec2(495, 95), glm::ivec2(195, 340), "Equipment") {}
+};
+
+class SkillsWindow : public UIWindow
+{
+protected:
+	virtual void draw()
+	{
+		for (unsigned int i = 0; i < playerSkills.size(); i++)
+		{
+			LearnedSkill* sInfo = playerSkills[i].get();
+
+			int y = 5 + (i * 29);
+
+			glColor4f(0.0f, 1.0f, 0.0f, 0.2f);
+			quad(5, y, 375, 25);
+			glColor4f(0.0f, 1.0f, 0.0f, 0.8f);
+			quad(5, y, calcProgressWidth(sInfo->getExp(), sInfo->getLevelUpExp(), 375), 25);
+			glColor3f(0.0f, 0.0f, 0.0f);
+			text(5, y + 20, GLUT_BITMAP_HELVETICA_18, loadedSkills[sInfo->getId()]->getName());
+			text(225, y + 20, GLUT_BITMAP_HELVETICA_18, "Lv. " + std::to_string(sInfo->getLevel()) + " (" + std::to_string(sInfo->getExp()) + " / " + std::to_string(sInfo->getLevelUpExp()) + ")");
+		}
+	}
+
+public:
+	SkillsWindow() : UIWindow(glm::ivec2(795, 95), glm::ivec2(395, 340), "Skills") {}
+};
+
+#pragma region Shops
 
 std::vector<int> shopItems;
 
-void drawShopWindow()
+class ShopWindow : public UIWindow
 {
-	if (!shopVisible) { return; }
-
-	glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-	drawQuad2D(395, 95, 195, 340);
-	glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-	drawQuad2D(400, 100, 185, 330);
-	glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
-	renderString(475, 120, GLUT_BITMAP_HELVETICA_18, "Shop");
-
-	// x button
-	glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-	drawQuad2D(563, 102, 20, 20);
-	glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-	renderString(568, 117, GLUT_BITMAP_HELVETICA_18, "x");
-
-	for (unsigned int i = 0; i < shopItems.size(); i++)
+protected:
+	virtual void draw()
 	{
-		glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-		drawQuad2D(405, 125 + (i * 29), 175, 25);
-		glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-		renderString(405, 140 + (i * 29), GLUT_BITMAP_HELVETICA_18, "item id " + std::to_string(shopItems[i]));
-	}
-}
-
-void onShopWindowClick(int x, int y)
-{
-	if (!shopVisible) { return; }
-
-	glm::vec2 curPos(x, y);
-
-	// x button
-	if (curPos.x >= 563 && curPos.y >= 102 && curPos.x <= 583 && curPos.y <= 122)
-	{
-		shopVisible = false;
-		return;
-	}
-
-	for (unsigned int i = 0; i < shopItems.size(); i++)
-	{
-		glm::vec2 low(405, 125 + (i * 29));
-		glm::vec2 high(low.x + 175, low.y + 25);
-
-		if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+		for (unsigned int i = 0; i < shopItems.size(); i++)
 		{
-			addInformationHistory("Click on shop item " + std::to_string(i));
-			playerInventoryItems.push_back(shopItems[i]);
-			break;
+			glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
+			quad(5, 5 + (i * 29), 175, 25);
+			glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
+			text(5, 25 + (i * 29), GLUT_BITMAP_HELVETICA_18, "item id " + std::to_string(shopItems[i]));
 		}
 	}
-}
+
+	virtual void click(int x, int y)
+	{
+		glm::vec2 curPos(x, y);
+
+		for (unsigned int i = 0; i < shopItems.size(); i++)
+		{
+			glm::vec2 low(5, 5 + (i * 29));
+			glm::vec2 high(low.x + 175, low.y + 25);
+
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				addInformationHistory("Click on shop item " + std::to_string(i));
+				playerInventoryItems.addItem(new Item(shopItems[i]));
+				break;
+			}
+		}
+	}
+
+public:
+	ShopWindow() : UIWindow(glm::ivec2(395, 95), glm::ivec2(195, 340), "Shop") {}
+};
 
 void addShopItem(int id) { shopItems.push_back(id); }
 
 void clearShopItems() { shopItems.clear(); }
+
+#pragma endregion
+
+#pragma region Dialogues
 
 class IDialogueWindow
 {
@@ -4091,7 +4561,90 @@ void onDialogueWindowClick(int x, int y)
 
 #pragma endregion
 
+#pragma region Keybinding
+
+struct Keybinding
+{
+	int keycode;
+
+	glm::ivec2 position;
+	glm::ivec2 size;
+	std::string text;
+
+	enum class Type
+	{
+		INTERNAL,
+		SKILL,
+		ITEM
+	};
+
+	Type type;
+	LearnedSkill* skill;
+	Item* item;
+};
+std::unordered_map<int, Keybinding> keybinds;
+
+class KeybindingWindow : public UIWindow
+{
+protected:
+	virtual void draw()
+	{
+		for (auto& keybind : keybinds)
+		{
+			glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
+			quad(keybind.second.position.x, keybind.second.position.y, keybind.second.size.x, keybind.second.size.y);
+			glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
+			text(5 + keybind.second.position.x, 25 + keybind.second.position.y, GLUT_BITMAP_9_BY_15, std::to_string(keybind.second.keycode));
+		}
+	}
+
+	virtual void click(int x, int y)
+	{
+		glm::vec2 curPos(x, y);
+
+		for (auto& keybind : keybinds)
+		{
+			glm::vec2 low(keybind.second.position.x, keybind.second.position.y);
+			glm::vec2 high(low.x + keybind.second.size.x, low.y + keybind.second.size.y);
+
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				addInformationHistory("Click on keybind " + std::to_string(keybind.second.keycode));
+				break;
+			}
+		}
+	}
+
+public:
+	KeybindingWindow() : UIWindow(glm::ivec2(200, 400), glm::ivec2(700, 300), "Keybinding") {}
+};
+
+void initKeybindings()
+{
+	keybinds[0].keycode = 0;
+	keybinds[0].position = glm::ivec2(10, 10);
+	keybinds[0].size = glm::ivec2(32, 32);
+	keybinds[0].text = "test";
+}
+
+void registerKeybinding(int keycode, Keybinding::Type actionType, LearnedSkill* skill, Item* item) {}
+
+#pragma endregion
+
+#pragma endregion
+
 #pragma region Attacking
+
+void damageEnemy(Enemy* hit)
+{
+	int damage = randomNumber(1, 3);
+	if (damage >= hit->getHP())
+	{
+		hit->onKilled();
+		for (auto it = enemies.begin(); it != enemies.end(); it++) { if (it->get() == hit) { enemies.erase(it); break; } }
+	}
+	else { hit->setHP(hit->getHP() - damage); }
+}
 
 class ISkillEffect
 {
@@ -4170,18 +4723,12 @@ void shootRaycaster(int mode)
 	for (auto& enemy : enemies)
 	{
 		// gen aabb
-		glm::vec3 lowerLeft(enemy->getPosition());
-		glm::vec3 upperRight(lowerLeft);
-		lowerLeft.x--;
-		lowerLeft.z--;
-		upperRight.x++;
-		upperRight.z++;
-		upperRight.y += 2;
+		AxisAlignedBoundingBox aabb = enemy->getAxisAlignedBoundingBox();
 
 		// check collision
 		glm::vec3 hitPos;
 
-		if (CheckLineBox(lowerLeft, upperRight, rayStart, rayEnd, hitPos))
+		if (CheckLineBox(aabb.getLowerBound(), aabb.getHigherBound(), rayStart, rayEnd, hitPos))
 		{
 			if (hits.empty() || mode == 2) { hits.push_back(std::unique_ptr<RaycasterShotHit>(new RaycasterShotHit(enemy.get(), hitPos))); }
 			else if (glm::distance(rayStart, hitPos) < glm::distance(rayStart, hits[0]->collisionPos))
@@ -4193,19 +4740,10 @@ void shootRaycaster(int mode)
 	}
 
 	// apply damage to hit enemies
-	if (!hits.empty())
+	for (auto& hit : hits)
 	{
-		for (auto& hit : hits)
-		{
-			printf("Enemy hit! (%s)\n", to_string(hit->hit->getPosition()).c_str());
-			int damage = randomNumber(1, 3);
-			if (damage >= hit->hit->getHP())
-			{
-				hit->hit->onKilled();
-				for (auto it = enemies.begin(); it != enemies.end(); it++) { if (it->get() == hit->hit) { enemies.erase(it); break; } }
-			}
-			else { hit->hit->setHP(hit->hit->getHP() - damage); }
-		}
+		printf("Raycaster hit enemy! (%s)\n", to_string(hit->hit->getPosition()).c_str());
+		damageEnemy(hit->hit);
 	}
 
 	// apply recoil
@@ -4231,7 +4769,7 @@ void updateRaycasterAutomaticFire()
 class RaycasterBasicAttackSkill : public ICombatSkill
 {
 public:
-	RaycasterBasicAttackSkill() : ICombatSkill(1, "Raycast Mastery") {}
+	RaycasterBasicAttackSkill() : ICombatSkill("Raycast Mastery") {}
 
 	virtual void attemptCast() { shootRaycaster(0); }
 };
@@ -4239,7 +4777,7 @@ public:
 class RaycasterPowerShotSkill : public ICombatSkill
 {
 public:
-	RaycasterPowerShotSkill() : ICombatSkill(2, "Raycast Power Shot") {}
+	RaycasterPowerShotSkill() : ICombatSkill("Raycast Power Shot") {}
 
 	virtual void attemptCast() { shootRaycaster(1); }
 };
@@ -4247,7 +4785,7 @@ public:
 class RaycasterBlastShotSkill : public ICombatSkill
 {
 public:
-	RaycasterBlastShotSkill() : ICombatSkill(3, "Raycast Blast Shot") {}
+	RaycasterBlastShotSkill() : ICombatSkill("Raycast Blast Shot") {}
 
 	virtual void attemptCast() { shootRaycaster(2); }
 };
@@ -4258,18 +4796,50 @@ private:
 	glm::vec3 mStartPoint;
 	glm::vec3 mEndPoint;
 	float mTimeDisplayed = 0.0f;
+	int mMode;
+	std::unordered_set<Enemy*> mHitEnemies;
 
 public:
-	ChargeDash() {}
+	ChargeDash(int mode) : mMode(mode) {}
 
 	virtual void update(float elapsed)
 	{
 		mTimeDisplayed += elapsed;
+
 		mStartPoint.x = cx;
 		mStartPoint.z = cz;
-		moveCamera(1, elapsed * 30.0f);
+
+		PhysicalEnvironment penv;
+		penv.preMove(elapsed);
+		moveCamera(1, elapsed * 45.0f);
+		penv.postMove();
+
 		mEndPoint.x = cx;
 		mEndPoint.z = cz;
+
+		if (mMode > 1)
+		{
+			playerEntity->setPosition(glm::vec3(cx, cy, cz));
+			AxisAlignedBoundingBox playerAabb = playerEntity->getAxisAlignedBoundingBox();
+
+			// check all enemies for hits
+			std::vector<Enemy*> hits;
+
+			for (auto& enemy : enemies)
+			{
+				if (mHitEnemies.count(enemy.get()) == 0 && playerAabb.intersects(enemy->getAxisAlignedBoundingBox()))
+				{
+					hits.push_back(enemy.get());
+				}
+			}
+
+			// apply damage to hit enemies
+			for (auto& hit : hits)
+			{
+				printf("Charge dash hit enemy! (%s)\n", to_string(hit->getPosition()).c_str());
+				damageEnemy(hit);
+			}
+		}
 	}
 
 	virtual void draw()
@@ -4290,7 +4860,7 @@ public:
 		glLineWidth(1.0f);
 	}
 
-	virtual bool completed() { return mTimeDisplayed >= 1.0f; }
+	virtual bool completed() { return mTimeDisplayed >= 0.5f; }
 };
 
 void startChargeDash(int mode)
@@ -4301,13 +4871,13 @@ void startChargeDash(int mode)
 	printf("Charge dash started at (%s) (mode %d)\n", to_string(glm::vec3(cx, cy, cz)).c_str(), mode);
 	playerMP -= mode;
 
-	skillEffects.push_back(std::unique_ptr<ISkillEffect>(new ChargeDash()));
+	skillEffects.push_back(std::unique_ptr<ISkillEffect>(new ChargeDash(mode)));
 }
 
 class ChargeDashBasicSkill : public ICombatSkill
 {
 public:
-	ChargeDashBasicSkill() : ICombatSkill(4, "Charge Dash (Basic)") {}
+	ChargeDashBasicSkill() : ICombatSkill("Charge Dash (Basic)") {}
 
 	virtual void attemptCast() { startChargeDash(1); }
 };
@@ -4315,7 +4885,7 @@ public:
 class ChargeDashRushSkill : public ICombatSkill
 {
 public:
-	ChargeDashRushSkill() : ICombatSkill(5, "Charge Dash (Rush)") {}
+	ChargeDashRushSkill() : ICombatSkill("Charge Dash (Rush)") {}
 
 	virtual void attemptCast() { startChargeDash(2); }
 };
@@ -4323,7 +4893,7 @@ public:
 class ChargeDashSweepSkill : public ICombatSkill
 {
 public:
-	ChargeDashSweepSkill() : ICombatSkill(6, "Charge Dash (Sweep)") {}
+	ChargeDashSweepSkill() : ICombatSkill("Charge Dash (Sweep)") {}
 
 	virtual void attemptCast() { startChargeDash(3); }
 };
@@ -4346,7 +4916,7 @@ public:
 		addInformationHistory("Clicked on trader");
 		clearShopItems();
 		for (int i = 1; i <= 10; i++) { addShopItem(i); }
-		shopVisible = true;
+		getUIWindowByTitle("Shop")->setVisible(true);
 	}
 };
 
@@ -4386,6 +4956,332 @@ void unloadNPC(int id)
 		}
 	}
 }
+
+#pragma endregion
+
+#pragma region Terrain Generation
+
+// Improved Perlin Noise. https://cs.nyu.edu/~perlin/noise/
+class PerlinNoise
+{
+public:
+	PerlinNoise()
+	{
+		int permutation[] = { 151,160,137,91,90,15,
+			131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,
+			190, 6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,
+			88,237,149,56,87,174,20,125,136,171,168, 68,175,74,165,71,134,139,48,27,166,
+			77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,
+			102,143,54, 65,25,63,161, 1,216,80,73,209,76,132,187,208, 89,18,169,200,196,
+			135,130,116,188,159,86,164,100,109,198,173,186, 3,64,52,217,226,250,124,123,
+			5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,
+			223,183,170,213,119,248,152, 2,44,154,163, 70,221,153,101,155,167, 43,172,9,
+			129,22,39,253, 19,98,108,110,79,113,224,232,178,185, 112,104,218,246,97,228,
+			251,34,242,193,238,210,144,12,191,179,162,241, 81,51,145,235,249,14,239,107,
+			49,192,214, 31,181,199,106,157,184, 84,204,176,115,121,50,45,127, 4,150,254,
+			138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180
+		};
+
+		for (int i = 0; i < 256; i++) p[256 + i] = p[i] = permutation[i];
+	}
+
+	double noise(double x, double y, double z) {
+		int X = (int)std::floor(x) & 255,                  // FIND UNIT CUBE THAT
+			Y = (int)std::floor(y) & 255,                  // CONTAINS POINT.
+			Z = (int)std::floor(z) & 255;
+		x -= std::floor(x);                                // FIND RELATIVE X,Y,Z
+		y -= std::floor(y);                                // OF POINT IN CUBE.
+		z -= std::floor(z);
+		double u = fade(x),                                // COMPUTE FADE CURVES
+			v = fade(y),                                // FOR EACH OF X,Y,Z.
+			w = fade(z);
+		int A = p[X] + Y, AA = p[A] + Z, AB = p[A + 1] + Z,      // HASH COORDINATES OF
+			B = p[X + 1] + Y, BA = p[B] + Z, BB = p[B + 1] + Z;      // THE 8 CUBE CORNERS,
+
+		return lerp(w, lerp(v, lerp(u, grad(p[AA], x, y, z),  // AND ADD
+			grad(p[BA], x - 1, y, z)), // BLENDED
+			lerp(u, grad(p[AB], x, y - 1, z),  // RESULTS
+				grad(p[BB], x - 1, y - 1, z))),// FROM  8
+			lerp(v, lerp(u, grad(p[AA + 1], x, y, z - 1),  // CORNERS
+				grad(p[BA + 1], x - 1, y, z - 1)), // OF CUBE
+				lerp(u, grad(p[AB + 1], x, y - 1, z - 1),
+					grad(p[BB + 1], x - 1, y - 1, z - 1))));
+	}
+
+private:
+	static double fade(double t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+	static double lerp(double t, double a, double b) { return a + t * (b - a); }
+	static double grad(int hash, double x, double y, double z) {
+		int h = hash & 15;                      // CONVERT LO 4 BITS OF HASH CODE
+		double u = h < 8 ? x : y,                 // INTO 12 GRADIENT DIRECTIONS.
+			v = h < 4 ? y : h == 12 || h == 14 ? x : z;
+		return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
+	}
+
+	int p[512];
+};
+
+void setTree(int x, int y, int z)
+{
+	int height = getRandomInt(4, 8);
+	glm::ivec3 shape(getRandomInt(2, 7), getRandomInt(1, height / 2), getRandomInt(2, 7));
+	for (int i = 0; i < height; i++) { setVoxel(x, y + i, z, 137, getRandomInt(30, 90), 0); } // trunk
+	for (int xx = x - shape.x; xx < x + shape.x; xx++)
+	{
+		for (int yy = y - shape.y; yy < y + shape.y; yy++)
+		{
+			for (int zz = z - shape.z; zz < z + shape.z; zz++)
+			{
+				if (getRandomInt(1, 10) >= 3)
+				{
+					setVoxel(xx, yy + height + (shape.y / 2), zz, getRandomInt(100, 135), getRandomInt(100, 135), 0);
+				}
+			}
+		}
+	}
+}
+
+class Dungeon
+{
+private:
+	glm::ivec3 mPosition;
+	glm::ivec3 mSize;
+	bool mazeWalls[57][57][4];
+	glm::ivec2 mazeCurPos;
+	int mazeMoveLimit = 300;
+	std::vector<glm::ivec2> mazeClearedTiles;
+
+	enum class MazeWall
+	{
+		FORWARD,
+		RIGHT,
+		BACKWARD,
+		LEFT,
+		INVALID
+	};
+
+	void mazeInitWalls()
+	{
+		for (int w = 0; w < 57; w++)
+		{
+			for (int d = 0; d < 57; d++)
+			{
+				for (int i = 0; i < 4; i++)
+				{
+					mazeWalls[w][d][i] = true;
+				}
+			}
+		}
+	}
+
+	void mazeRemoveWall(MazeWall dir) { mazeWalls[mazeCurPos.x][mazeCurPos.y][(int)dir] = false; }
+
+	bool mazeCanMove(MazeWall dir)
+	{
+		return !(dir == MazeWall::FORWARD && mazeCurPos.y + 1 > 56 ||
+			dir == MazeWall::RIGHT && mazeCurPos.x + 1 > 56 ||
+			dir == MazeWall::BACKWARD && mazeCurPos.y - 1 < 0 ||
+			dir == MazeWall::LEFT && mazeCurPos.x - 1 < 0);
+	}
+
+	void mazeMoveDirection(MazeWall dir)
+	{
+		if (dir == MazeWall::FORWARD) { mazeCurPos.y++; }
+		else if (dir == MazeWall::RIGHT) { mazeCurPos.x++; }
+		else if (dir == MazeWall::BACKWARD) { mazeCurPos.y--; }
+		else if (dir == MazeWall::LEFT) { mazeCurPos.x--; }
+	}
+
+	MazeWall mazeGetInverseWall(MazeWall dir)
+	{
+		if (dir == MazeWall::FORWARD) { return MazeWall::BACKWARD; }
+		else if (dir == MazeWall::RIGHT) { return MazeWall::LEFT; }
+		else if (dir == MazeWall::BACKWARD) { return MazeWall::FORWARD; }
+		else if (dir == MazeWall::LEFT) { return MazeWall::RIGHT; }
+		else { return MazeWall::INVALID; }
+	}
+
+	bool mazeClearPath(MazeWall dir)
+	{
+		if (!mazeCanMove(dir)) { return false; }
+
+		mazeRemoveWall(dir);
+		mazeMoveDirection(dir);
+		mazeRemoveWall(mazeGetInverseWall(dir));
+		mazeClearedTiles.push_back(mazeCurPos);
+
+		return true;
+	}
+
+	void mazeGenerate()
+	{
+		mazeInitWalls();
+		MazeWall lastDirection = MazeWall::INVALID;
+		for (int curMoves = 0; curMoves < mazeMoveLimit; curMoves++)
+		{
+			MazeWall direction = (MazeWall)getRandomInt(0, 3);
+			if (lastDirection != MazeWall::INVALID)
+			{
+				// don't just go forwards and backwards, and don't attempt a move we just confirmed is invalid either
+				while (direction == mazeGetInverseWall(lastDirection) || !mazeCanMove(direction))
+				{
+					if (direction == mazeGetInverseWall(lastDirection))
+					{
+						printf("%d is inverse %d! regen\n", direction, lastDirection);
+					}
+					else if (!mazeCanMove(direction))
+					{
+						printf("can't move in dir %d! regen\n", direction);
+					}
+					else
+					{
+						printf("UNKOWN MAZE ERROR!\n");
+					}
+					direction = (MazeWall)getRandomInt(0, 3);
+				}
+			}
+			int len = getRandomInt(2, 8);
+
+			for (int i = 0; i < len; i++)
+			{
+				if (!mazeClearPath(direction))
+				{
+					printf("Hit map bound\n");
+					break;
+				}
+			}
+
+			lastDirection = direction;
+			printf("Completed maze move %d\n", curMoves);
+		}
+	}
+
+	void generateMazeWallVoxels(int baseX, int baseZ, MazeWall wall)
+	{
+		for (int i = 0; i < 16; i++)
+		{
+			setVoxel(
+				baseX + (wall == MazeWall::FORWARD || wall == MazeWall::BACKWARD ? i : 0) + (wall == MazeWall::RIGHT ? 15 : 0),
+				0,
+				baseZ + (wall == MazeWall::LEFT || wall == MazeWall::RIGHT ? i : 0) + (wall == MazeWall::FORWARD ? 15 : 0),
+				randomNumber(0, 15),
+				randomNumber(0, 75),
+				randomNumber(0, 15)
+			);
+		}
+	}
+
+	void loadChunks()
+	{
+		// base terrain floor and edges
+		for (int x = mPosition.x; x < mSize.x * 16; x++)
+		{
+			for (int z = mPosition.z; z < mSize.z * 16; z++)
+			{
+				setVoxel(x, -1, z, randomNumber(0, 30), randomNumber(100, 255), randomNumber(0, 30));
+				//if (x == -200 || x == 200 || z == -200 || z == 200) { setVoxel(x, 0, z, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15)); }
+			}
+		}
+
+		// generate and apply pathing
+		mazeCurPos = glm::ivec2(randomNumber(0, 56), randomNumber(0, 56));
+		mazeClearedTiles.push_back(mazeCurPos);
+		//cx = (float)mPosition.x + (float)(mazeCurPos.x * 7) + 4;
+		//cz = (float)mPosition.z + (float)(mazeCurPos.y * 7) + 4;
+		mazeGenerate();
+
+		for (int x = 0; x < mSize.x; x++)
+		{
+			for (int z = 0; z < mSize.z; z++)
+			{
+				int baseX = mPosition.x + (x * 16);
+				int baseZ = mPosition.z + (z * 16);
+
+				// place walls on voxel terrain for each walled off direction of the cell
+				for (int wall = 0; wall < 4; wall++) { if (mazeWalls[x][z][wall]) { generateMazeWallVoxels(baseX, baseZ, (MazeWall)wall); } }
+
+				// fill in the center of completely walled off cells
+				if (mazeWalls[x][z][0] && mazeWalls[x][z][1] && mazeWalls[x][z][2] && mazeWalls[x][z][3])
+				{
+					for (int xx = 0; xx < 14; xx++)
+					{
+						for (int zz = 0; zz < 14; zz++)
+						{
+							setVoxel(baseX + 1 + xx, 0, baseZ + 1 + zz, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15));
+						}
+					}
+
+					// also add a tree in the center
+					setTree(baseX + getRandomInt(3, 10), 0, baseZ + getRandomInt(3, 10));
+				}
+			}
+		}
+
+		// load spawnpoints
+		for (int i = 0; i < 10; i++)
+		{
+			glm::ivec2 pos = mazeClearedTiles[randomNumber(3, mazeClearedTiles.size() - 1)];
+			spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(mPosition.x + (pos.x * 16) + 3, 0.0f, mPosition.z + (pos.y * 16) + 3))));
+		}
+
+		// add wave enter npc
+		//loadNPC(2, glm::vec3(cx - 3, 0, cz - 3));
+	}
+
+public:
+	Dungeon(int x, int z) : mPosition(x, 0, z), mSize(57, 1, 57) { loadChunks(); }
+
+	void drawBorder()
+	{
+		glm::vec3 pos((float)mPosition.x, (float)mPosition.y, (float)mPosition.z);
+		glm::vec3 size((float)mSize.x, (float)mSize.y, (float)mSize.z);
+		size *= 16;
+
+		bool inside = isPlayerInside();
+		glColor4f(inside ? 1.0f : 0.0f, 0.2f, inside ? 0.0f : 1.0f, 0.75f);
+
+		glBegin(GL_QUADS);
+
+		// front
+		glVertex3f(pos.x, 100.0f, pos.z);
+		glVertex3f(pos.x + size.x, 100.0f, pos.z);
+		glVertex3f(pos.x + size.x, 0.0f, pos.z);
+		glVertex3f(pos.x, 0.0f, pos.z);
+
+		// back
+		glVertex3f(pos.x, 100.0f, pos.z + size.z);
+		glVertex3f(pos.x + size.x, 100.0f, pos.z + size.z);
+		glVertex3f(pos.x + size.x, 0.0f, pos.z + size.z);
+		glVertex3f(pos.x, 0.0f, pos.z + size.z);
+
+		// left
+		glVertex3f(pos.x, 100.0f, pos.z);
+		glVertex3f(pos.x, 100.0f, pos.z + size.z);
+		glVertex3f(pos.x, 0.0f, pos.z + size.z);
+		glVertex3f(pos.x, 0.0f, pos.z);
+
+		// right
+		glVertex3f(pos.x + size.x, 100.0f, pos.z);
+		glVertex3f(pos.x + size.x, 100.0f, pos.z + size.z);
+		glVertex3f(pos.x + size.x, 0.0f, pos.z + size.z);
+		glVertex3f(pos.x + size.x, 0.0f, pos.z);
+
+		glEnd();
+	}
+
+	bool usesChunk(int x, int y, int z)
+	{
+		glm::ivec3 chunkStart(getVoxelChunkPos(mPosition.x, mPosition.y, mPosition.z));
+		glm::ivec3 chunkEnd(getVoxelChunkPos(mPosition.x + (mSize.x * 16), mPosition.y + (mSize.x * 16), mPosition.z + (mSize.x * 16)));
+
+		if (x >= chunkStart.x && x < chunkEnd.x && z >= chunkStart.z && z < chunkEnd.z) { return true; }
+		return false;
+	}
+
+	bool usesChunk(const glm::ivec3& pos) { return usesChunk(pos.x, pos.y, pos.z); }
+
+	bool isPlayerInside() { return usesChunk(getVoxelChunkPos(getPlayerPositionVoxelPos())); }
+};
 
 #pragma endregion
 
@@ -4449,17 +5345,19 @@ int playerDeaths = 0;
 void loadConfig()
 {
 	// check for file
-	if (!Tools::FileUtil::exists("settings.ini"))
+	if (!Tools::FileUtil::exists("settings_.ini"))
 	{
 		printf("settings.ini not found. no configuration was loaded.\n");
 
 		// TODO: remove! TEMP, TESTING
-		playerInventoryItems.push_back(1);
-		playerInventoryItems.push_back(2);
-		playerInventoryItems.push_back(3);
-		playerInventoryItems.push_back(4);
-		playerInventoryItems.push_back(5);
-		playerInventoryItems.push_back(6);
+		playerInventoryItems.addItem(new Item(1000001));
+		playerInventoryItems.addItem(new Item(1000002));
+		playerInventoryItems.addItem(new Item(1000003));
+		playerInventoryItems.addItem(new Item(1000004));
+		playerInventoryItems.addItem(new Item(1000005));
+		playerInventoryItems.addItem(new Item(1000006));
+		playerInventoryItems.addItem(new Item(2000001, 1000));
+		playerInventoryItems.addItem(new Item(2000002, 1000));
 
 		return;
 	}
@@ -4482,11 +5380,11 @@ void loadConfig()
 	playerLevel = cfg.getInt("Player", "level");
 
 	// items
-	for (unsigned int i = 0; i < cfg.getInt("PlayerInventory", "itemCount"); i++) { playerInventoryItems.push_back(cfg.getInt("PlayerInventory", "item" + std::to_string(i))); }
-	for (unsigned int i = 0; i < cfg.getInt("PlayerEquipment", "itemCount"); i++) { playerEquipmentItems.push_back(cfg.getInt("PlayerEquipment", "item" + std::to_string(i))); }
+	for (unsigned int i = 0; i < (unsigned int)cfg.getInt("PlayerInventory", "itemCount"); i++) { playerInventoryItems.addItem(new Item(cfg.getInt("PlayerInventory", "item" + std::to_string(i)))); }
+	for (unsigned int i = 0; i < (unsigned int)cfg.getInt("PlayerEquipment", "itemCount"); i++) { playerEquipmentItems.push_back(cfg.getInt("PlayerEquipment", "item" + std::to_string(i))); }
 
 	// skills
-	for (unsigned int i = 0; i < cfg.getInt("PlayerSkills", "itemCount"); i++)
+	for (unsigned int i = 0; i < (unsigned int)cfg.getInt("PlayerSkills", "itemCount"); i++)
 	{
 		playerSkills.push_back(std::unique_ptr<LearnedSkill>(new LearnedSkill(
 			cfg.getInt("PlayerSkills", "skill" + std::to_string(i) + "Id"),
@@ -4516,8 +5414,9 @@ void saveConfig()
 	cfg.setInt("Player", "level", playerLevel);
 
 	// items
-	cfg.setInt("PlayerInventory", "itemCount", playerInventoryItems.size());
-	for (unsigned int i = 0; i < playerInventoryItems.size(); i++) { cfg.setInt("PlayerInventory", "item" + std::to_string(i), playerInventoryItems[i]); }
+	// TODO: fix item saving!
+	//cfg.setInt("PlayerInventory", "itemCount", playerInventoryItems.size());
+	//for (unsigned int i = 0; i < playerInventoryItems.size(); i++) { cfg.setInt("PlayerInventory", "item" + std::to_string(i), playerInventoryItems[i]); }
 	cfg.setInt("PlayerEquipment", "itemCount", playerEquipmentItems.size());
 	for (unsigned int i = 0; i < playerEquipmentItems.size(); i++) { cfg.setInt("PlayerEquipment", "item" + std::to_string(i), playerEquipmentItems[i]); }
 
@@ -4552,7 +5451,7 @@ int getWaveEnemyCount(int level) { return 4 + (level * 7) + (((level - 1) * 3) *
 int getWaveEnemySpawnsRemaining() { return getWaveEnemyCount(currentWave) - (waveEnemiesKilled + enemies.size()); }
 bool waveTransition = false;
 long long lastWaveEndTime = 0;
-int getWaveRemainingTransitionTime() { return (lastWaveEndTime + 60000) - Tools::currentTimeMillis(); }
+int getWaveRemainingTransitionTime() { return (int)((lastWaveEndTime + 60000) - Tools::currentTimeMillis()); }
 
 class WaveEnterDialogueWindow : public IDialogueWindow
 {
@@ -4643,7 +5542,7 @@ void updateWaveTransition()
 		waveEnemiesKilled = 0;
 		waveTransition = false;
 		unloadNPC(1);
-		shopVisible = false;
+		getUIWindowByTitle("Shop")->setVisible(false);
 	}
 }
 
@@ -4697,58 +5596,100 @@ std::unique_ptr<ICombatEntityListener> enemyDropItemListener;
 
 #pragma region Map Loading
 
-void loadGameMap()
+std::vector<std::unique_ptr<Dungeon>> dungeons;
+
+bool isDungeonChunk(int x, int y, int z)
 {
-	// base terrain floor and edges
-	for (int x = -200; x < 199; x++)
+	for (auto& dungeon : dungeons)
 	{
-		for (int z = -200; z < 199; z++)
-		{
-			setVoxel(x, -1, z, randomNumber(0, 30), randomNumber(100, 255), randomNumber(0, 30));
-			//if (x == -200 || x == 200 || z == -200 || z == 200) { setVoxel(x, 0, z, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15)); }
-		}
+		if (dungeon->usesChunk(x, y, z)) { return true; }
 	}
+	return false;
+}
 
-	// generate and apply pathing
-	mazeCurPos = glm::ivec2(randomNumber(0, 56), randomNumber(0, 56));
-	mazeClearedTiles.push_back(mazeCurPos);
-	cx = -200 + (mazeCurPos.x * 7) + 4;
-	cz = -200 + (mazeCurPos.y * 7) + 4;
-	mazeGenerate();
+void loadNewChunks()
+{
+	PerlinNoise noise;
+	glm::ivec3 playerVoxel(getPlayerPositionVoxelPos());
+	glm::ivec3 curChunk(getVoxelChunkPos(playerVoxel.x, playerVoxel.y, playerVoxel.z));
 
-	for (int x = 0; x < 57; x++)
+	std::vector<glm::ivec3> treeChunks;
+
+	// first perlin on the ground
+	for (int x = curChunk.x - volumeRenderDistance; x <= curChunk.x + volumeRenderDistance; x++)
 	{
-		for (int z = 0; z < 57; z++)
+		for (int y = curChunk.y - 1; y <= curChunk.y + 1; y++)
 		{
-			int baseX = -200 + (x * 7);
-			int baseZ = -200 + (z * 7);
-
-			// place walls on voxel terrain for each walled off direction of the cell
-			for (int wall = 0; wall < 4; wall++) { if (mazeWalls[x][z][wall]) { generateMazeWallVoxels(baseX, baseZ, (MazeWall)wall); } }
-
-			// fill in the center of completely walled off cells
-			if (mazeWalls[x][z][0] && mazeWalls[x][z][1] && mazeWalls[x][z][2] && mazeWalls[x][z][3])
+			for (int z = curChunk.z - volumeRenderDistance; z <= curChunk.z + volumeRenderDistance; z++)
 			{
-				for (int xx = 0; xx < 5; xx++)
+				// don't auto-generate noise on dungeon terrain
+				if (isDungeonChunk(x, y, z)) { continue; }
+
+				// dynamically load terrain using perlin
+				if (mChunks.count(glm::ivec3(x, y, z)) == 0)
 				{
-					for (int zz = 0; zz < 5; zz++)
+					// load unloaded chunk near range
+					int xxStart = x * 16;
+					int yyStart = y * 16;
+					int zzStart = z * 16;
+
+					for (int xx = xxStart; xx < xxStart + 16; xx++)
 					{
-						setVoxel(baseX + 1 + xx, 0, baseZ + 1 + zz, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15));
+						for (int yy = yyStart; yy < yyStart + 16; yy++)
+						{
+							for (int zz = zzStart; zz < zzStart + 16; zz++)
+							{
+								double n = noise.noise((double)xx / 128.0, (double)yy / 128.0, (double)zz / 128.0);
+								n += 1.0; // temporarily push all generation into positive space. physics fucks up at cy < 0
+								n *= 16.0;
+								if (yy <= (int)std::floor(n))
+								{
+									setVoxel(xx, yy, zz, randomNumber(0, 30), randomNumber(100, 255), randomNumber(0, 30));
+								}
+							}
+						}
 					}
+
+					// add it for tree processing if not on the edges (don't want trees to fuck up perlin)
+					if (x > curChunk.x - volumeRenderDistance && x < curChunk.x + volumeRenderDistance &&
+						z > curChunk.z - volumeRenderDistance && z < curChunk.z + volumeRenderDistance)
+					{ treeChunks.push_back(glm::ivec3(x, y, z)); }
 				}
 			}
 		}
 	}
 
-	// load spawnpoints
-	for (int i = 0; i < 10; i++)
+	// then randomly place some trees
+	for (auto c : treeChunks)
 	{
-		glm::ivec2 pos = mazeClearedTiles[randomNumber(3, mazeClearedTiles.size() - 1)];
-		spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(-200 + (pos.x * 7) + 3, 0.0f, -200 + (pos.y * 7) + 3))));
+		int xxStart = c.x * 16;
+		int yyStart = c.y * 16;
+		int zzStart = c.z * 16;
+
+		glm::ivec3 treeStart(xxStart + getRandomInt(3, 7), yyStart, zzStart + getRandomInt(3, 7));
+		// no tree spawns if ground doesn't exist on this chunk
+		if (getVoxel(treeStart).a != 0)
+		{
+			treeStart.y++;
+			bool airFound = false;
+			for (int i = 0; i < 15; i++)
+			{
+				if (getVoxel(treeStart).a != 0) { treeStart.y++; }
+				else { airFound = true; break; }
+			}
+			if (airFound) { setTree(treeStart.x, treeStart.y, treeStart.z); }
+		}
 	}
 
-	// add wave enter npc
-	loadNPC(2, glm::vec3(cx - 3, 0, cz - 3));
+	// draw dungeon borders
+	for (auto& dungeon : dungeons) { dungeon->drawBorder(); }
+}
+
+void loadGameMap()
+{
+	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(-1024, -1024)));
+	loadNewChunks();
+	while (getVoxel(getPlayerPositionVoxelPos()).a != 0) { cy++; }
 }
 
 #pragma endregion
@@ -4757,6 +5698,7 @@ void loadGameMap()
 void drawGameMap(float elapsed)
 {
 	// Draw ground
+	loadNewChunks();
 	renderChunks();
 	//glColor3f(0.9f, 0.9f, 0.9f);
 	//glBegin(GL_QUADS);
@@ -4920,27 +5862,32 @@ void renderScene()
 		renderString(10, 130, GLUT_BITMAP_HELVETICA_18, "Waves Disabled");
 	}
 
-	renderSpacedBitmapString(5, 190, 0, GLUT_BITMAP_HELVETICA_18, ("Active Chunks: " + std::to_string(mChunks.size())).c_str());
+	std::string vxStr = "Active Chunks: " + std::to_string(mChunks.size()) + " | Extracting: " + std::to_string(activeSurfaceExtractionThreads) + " | Render Dist: " + std::to_string(volumeRenderDistance);
+	renderString(5, 190, GLUT_BITMAP_HELVETICA_18, vxStr);
+	glm::ivec3 playerVoxel(getPlayerPositionVoxelPos());
+	std::string vpStr = "Player Voxel Pos: " + to_string(playerVoxel) + " | Chunk: " + to_string(getVoxelChunkPos(playerVoxel.x, playerVoxel.y, playerVoxel.z));
+	renderString(5, 210, GLUT_BITMAP_HELVETICA_18, vpStr);
 	std::string cpStr = "Camera: (" + to_string(glm::vec3(cx, cy, cz)) + ") -> (" + to_string(glm::vec3(lx, ly, lz)) + ")";
 	renderSpacedBitmapString(5, 230, 0, GLUT_BITMAP_HELVETICA_18, cpStr.c_str());
 
 	// render stat bars at the bottom
+
 	// hp bar
-	glColor4f(1.0f, 0.0f, 0.0f, 0.2f);
+	glColor4f(1.0f, 0.0f, 0.0f, 0.5f);
 	drawQuad2D(0, windowHeight - 50, windowWidth / 2, 25);
 	glColor4f(1.0f, 0.0f, 0.0f, 0.8f);
 	drawQuad2D(0, windowHeight - 50, calcProgressWidth(playerHP, playerMaxHP, windowWidth / 2), 25);
 	glColor3f(0.0f, 0.0f, 0.0f);
 	renderString(windowWidth / 4, windowHeight - 30, GLUT_BITMAP_HELVETICA_18, std::string("HP: ") + std::to_string(playerHP) + " / " + std::to_string(playerMaxHP));
 	// mp bar
-	glColor4f(0.0f, 0.0f, 1.0f, 0.2f);
+	glColor4f(0.0f, 0.0f, 1.0f, 0.5f);
 	drawQuad2D(windowWidth / 2, windowHeight - 50, windowWidth / 2, 25);
 	glColor4f(0.0f, 0.0f, 1.0f, 0.8f);
 	drawQuad2D(windowWidth / 2, windowHeight - 50, calcProgressWidth(playerMP, playerMaxMP, windowWidth / 2), 25);
 	glColor3f(0.0f, 0.0f, 0.0f);
 	renderString((windowWidth / 2) + (windowWidth / 4), windowHeight - 30, GLUT_BITMAP_HELVETICA_18, std::string("MP: ") + std::to_string(playerMP) + " / " + std::to_string(playerMaxMP));
 	// exp bar
-	glColor4f(0.0f, 1.0f, 0.0f, 0.2f);
+	glColor4f(0.0f, 1.0f, 0.0f, 0.5f);
 	drawQuad2D(0, windowHeight - 25, windowWidth, 25);
 	glColor4f(0.0f, 1.0f, 0.0f, 0.8f);
 	drawQuad2D(0, windowHeight - 25, calcProgressWidth(playerEXP, getEXPNeeded(playerLevel), windowWidth), 25);
@@ -4952,11 +5899,11 @@ void renderScene()
 	updateInformationHistory();
 
 	// draw UI windows
-	drawInventoryWindow();
-	drawEquipmentWindow();
-	drawSkillsWindow();
-	drawShopWindow();
+	for (unsigned int i = 0; i < uiWindows.size(); i++) { uiWindows[i]->onDraw(); }
 	drawDialogueWindow();
+
+	// process mouse movement for UI windows
+	for (auto it = uiWindows.rbegin(); it != uiWindows.rend(); it++) { it->get()->onMouseMove(); }
 
 	// return to 3d drawing context
 	restorePerspectiveProjection();
@@ -5006,7 +5953,7 @@ void attemptItemPickup()
 	{
 		if (glm::distance(playerPos, it->get()->getPosition()) <= 1.0f)
 		{
-			playerInventoryItems.push_back(it->get()->getId());
+			playerInventoryItems.addItem(new Item(it->get()->getId()));
 			addInformationHistory("Picked up item (id " + std::to_string(it->get()->getId()) + ")");
 			droppedItems.erase(it);
 			break;
@@ -5034,10 +5981,11 @@ void attemptItemPickup()
 #define GLUT_KEY_8 56
 #define GLUT_KEY_9 57
 #define GLUT_KEY_SPACEBAR 32
+#define GLUT_KEY_F 102
 
 void processNormalKeys(unsigned char key, int x, int y)
 {
-	//printf("Normal key: %d\n", key);
+	printf("Normal key: %d\n", key);
 
 	switch (key)
 	{
@@ -5046,18 +5994,19 @@ void processNormalKeys(unsigned char key, int x, int y)
 	case GLUT_KEY_A: charPos.x--; break;
 	case GLUT_KEY_S: moveCamBackward = true; break;
 	case GLUT_KEY_D: charPos.x++; break;
-	case GLUT_KEY_E: equipmentVisible = !equipmentVisible; break;
-	case GLUT_KEY_I: inventoryVisible = !inventoryVisible; break;
-	case GLUT_KEY_R: skillsWindowVisible = !skillsWindowVisible; break;
+	case GLUT_KEY_E: getUIWindowByTitle("Equipment")->setVisible(!getUIWindowByTitle("Equipment")->getVisible()); break;
+	case GLUT_KEY_I: getUIWindowByTitle("Inventory")->setVisible(!getUIWindowByTitle("Inventory")->getVisible()); break;
+	case GLUT_KEY_R: getUIWindowByTitle("Skills")->setVisible(!getUIWindowByTitle("Skills")->getVisible()); break;
 	case GLUT_KEY_Z: attemptItemPickup(); break;
 	case GLUT_KEY_SPACEBAR: playerJumpRequested = true; break;
+	case GLUT_KEY_F: getUIWindowByTitle("Keybinding")->setVisible(!getUIWindowByTitle("Keybinding")->getVisible()); break;
 	}
 
 	// auto bind learned skills to number keys 1 - 9
 	if (key >= GLUT_KEY_1 && key <= GLUT_KEY_9)
 	{
 		int skillIndex = key - GLUT_KEY_1;
-		if (skillIndex >= playerSkills.size()) { return; }
+		if (skillIndex >= (int)playerSkills.size()) { return; }
 		auto skill = loadedSkills.find(playerSkills[skillIndex]->getId());
 		if (skill != loadedSkills.end()) { skill->second->attemptCast(); }
 	}
@@ -5107,10 +6056,15 @@ void processSpecialKeys(int key, int x, int y) {
 	}
 }
 
-void mouseButton(int button, int state, int x, int y) {
+glm::ivec2 windowDragOrigin;
+glm::ivec2 draggedWindowOriginalPos;
+UIWindow* draggedWindow = 0;
 
+void mouseButton(int button, int state, int x, int y)
+{
 	// only start motion if the left button is pressed
-	if (button == GLUT_LEFT_BUTTON) {
+	if (button == GLUT_LEFT_BUTTON)
+	{
 		/*
 		// when the button is released
 		if (state == GLUT_UP) {
@@ -5121,11 +6075,48 @@ void mouseButton(int button, int state, int x, int y) {
 			xOrigin = x;
 		}
 		*/
-		if (state == GLUT_DOWN) {
+
+		if (state == GLUT_DOWN)
+		{
+			// window dragging
+			for (auto it = uiWindows.rbegin(); it != uiWindows.rend(); it++)
+			{
+				UIWindow* window = it->get();
+
+				if (!window->getVisible()) { continue; }
+
+				// calculate title bar area
+				const glm::ivec2& pos = window->getPosition();
+				glm::ivec2 titleStart(pos.x + 10, pos.y + 7);
+				glm::ivec2 titleEnd(window->getSize().x - 40, 20);
+				titleEnd += titleStart;
+
+				if (x >= titleStart.x && y >= titleStart.y && x <= titleEnd.x && y <= titleEnd.y)
+				{
+					windowDragOrigin.x = x;
+					windowDragOrigin.y = y;
+					draggedWindowOriginalPos = pos;
+					draggedWindow = window;
+					break;
+				}
+			}
+
 			// check UI window clicks
-			onInventoryWindowClick(x, y);
-			onEquipmentWindowClick(x, y);
-			onShopWindowClick(x, y);
+			for (auto it = uiWindows.rbegin(); it != uiWindows.rend(); it++)
+			{
+				UIWindow* window = it->get();
+
+				if (window->onClick(x, y))
+				{
+					// last clicked window should be drawn last (front of z-order)
+					if (uiWindows.back().get() != window)
+					{
+						uiWindows.push_back(std::move(*it));
+						uiWindows.erase(std::next(it).base());
+					}
+					break;
+				}
+			}
 			onDialogueWindowClick(x, y);
 
 			// check NPC clicks
@@ -5149,6 +6140,11 @@ void mouseButton(int button, int state, int x, int y) {
 				if (CheckLineBox(lowerLeft, upperRight, rayStart, rayEnd, rayHit)) { registeredNPCs[loadedNPCs[i]->id]->onClick(); }
 			}
 		}
+		else if (state == GLUT_UP)
+		{
+			// window dragging
+			draggedWindow = 0;
+		}
 	}
 	// shoot on right click
 	else if (button == GLUT_RIGHT_BUTTON)
@@ -5158,8 +6154,13 @@ void mouseButton(int button, int state, int x, int y) {
 	}
 }
 
-void mouseMove(int x, int y) {
+void mouseMove(int x, int y)
+{
+	// update mouse position for the ui
+	currentMousePos.x = x;
+	currentMousePos.y = y;
 
+	/*
 	// this will only be true when the left button is down
 	if (xOrigin >= 0) {
 
@@ -5170,11 +6171,20 @@ void mouseMove(int x, int y) {
 		lx = sinf(angle + deltaAngle);
 		lz = -cosf(angle + deltaAngle);
 	}
+	*/
+
+	if (draggedWindow)
+	{
+		glm::ivec2 diff = glm::ivec2(x, y) - windowDragOrigin;
+		draggedWindow->setPosition(draggedWindowOriginalPos + diff);
+	}
 }
 
-void mouseMovePassive(int x, int y) {
-
-	// todo
+void mouseMovePassive(int x, int y)
+{
+	// update mouse position for the ui
+	currentMousePos.x = x;
+	currentMousePos.y = y;
 }
 
 #pragma endregion
@@ -5209,8 +6219,8 @@ int main(int argc, char** argv)
 	glClearColor(BYTE_TO_FLOAT_COLOR(100), BYTE_TO_FLOAT_COLOR(149), BYTE_TO_FLOAT_COLOR(237), 0.0f); // cornflowerblue
 
 	// game init
-	//switchMapleMap(104040000); // hhg1
 	srand((unsigned int)time(0));
+	//switchMapleMap(104040000); // hhg1
 
 	// load enemy listeners
 	waveEnemyListener.reset(new WaveEnemyListener());
@@ -5221,17 +6231,36 @@ int main(int argc, char** argv)
 	wavePlayerListener.reset(new WavePlayerListener());
 	playerEntity->addListener(wavePlayerListener.get());
 
-	// load skills
-	loadedSkills[1].reset(new RaycasterBasicAttackSkill());
-	loadedSkills[2].reset(new RaycasterPowerShotSkill());
-	loadedSkills[3].reset(new RaycasterBlastShotSkill());
-	loadedSkills[4].reset(new ChargeDashBasicSkill());
-	loadedSkills[5].reset(new ChargeDashRushSkill());
-	loadedSkills[6].reset(new ChargeDashSweepSkill());
+	// register skills
+	registerSkill(1000001, new RaycasterBasicAttackSkill());
+	registerSkill(1000002, new RaycasterPowerShotSkill());
+	registerSkill(1000003, new RaycasterBlastShotSkill());
+	registerSkill(1000004, new ChargeDashBasicSkill());
+	registerSkill(1000005, new ChargeDashRushSkill());
+	registerSkill(1000006, new ChargeDashSweepSkill());
 
 	// register npcs
 	registerNPC(1, new TraderNPC());
 	registerNPC(2, new WaveEnterNPC());
+
+	// register items
+	registerItem(1000001, new Item_BasicRaycaster());
+	registerItem(1000002, new Item_PowerRaycaster());
+	registerItem(1000003, new Item_BlastRaycaster());
+	registerItem(1000004, new Item_BasicCharger());
+	registerItem(1000005, new Item_PowerCharger());
+	registerItem(1000006, new Item_BlastCharger());
+	registerItem(2000001, new Item_RedPotion());
+	registerItem(2000002, new Item_BluePotion());
+
+	// add UI windows
+	addUIWindow(new InventoryWindow());
+	addUIWindow(new EquipmentWindow());
+	addUIWindow(new SkillsWindow());
+	addUIWindow(new ShopWindow());
+	addUIWindow(new KeybindingWindow());
+
+	initKeybindings();
 
 	// load player config
 	loadConfig();
@@ -5254,15 +6283,21 @@ player and mob skills, voxel engine core, player stat regen, maze generation
 v2:
 a* pathfinding on mobs, voxel terrain physics, jumping
 
+v3:
+3 new skills, inventory system upgrades (icon size increased, icon visuals added, tooltips w/ name and description, item stacking),
+hp and mp pots, volume surface extraction multithreaded, ui system upgrades (window dragging, universal closing, z-ordering),
+terrain generation upgrades (perlin, dungeons, trees)
+
 DONE BUT DISABLED:
 Maple map XML wz foothold and layout voxel mapping with depth expansion and dynamic noise, portals, switching maps, ropes/ladders (render only)
 
 NEXT:
-3 new skills, inventory upgrades, hp and mp pots, keybinding window
+trader positioning fixed, mob scaling, skill scaling, wave boss,
+equipment window upgrades, skill window icons, bank, crafting, keybinding window, voxel placing & destroying
 
 TENTATIVE TODO:
 Map biome, noise, and XML wz mapping and depth expansion generation upgrades
 Equipment and item voxel mapping generation & UI windows
 Improve combat item and skill support, improve mob support
-Map regeneration, mob stat regen, basic tutorial, UI improvement, key (re)binding
+Map regeneration, mob stat regen, basic tutorial, UI improvement
 */
