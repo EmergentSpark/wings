@@ -132,7 +132,7 @@ public:
 	bool operator > (int i) { return getTotal() > i; }
 	bool operator == (int i) { return getTotal() == i; }
 
-	glm::vec3 toVertexColor() { return glm::vec3(BYTE_TO_FLOAT_COLOR(r), BYTE_TO_FLOAT_COLOR(g), BYTE_TO_FLOAT_COLOR(b)); }
+	const glm::vec3 toVertexColor() const { return glm::vec3(BYTE_TO_FLOAT_COLOR(r), BYTE_TO_FLOAT_COLOR(g), BYTE_TO_FLOAT_COLOR(b)); }
 
 private:
 	unsigned short getTotal() { return r + g + b + a; }
@@ -2765,6 +2765,33 @@ struct VolumeChunk
 	}
 };
 
+struct ChunkMinimapColormap
+{
+	int mHighestVoxel = std::numeric_limits<int>::lowest();
+	VoxelType mColors[16][16];
+	glm::ivec2 mLowerCorner;
+
+	ChunkMinimapColormap(const glm::ivec3& chunkLowerBound) : mLowerCorner(chunkLowerBound.x, chunkLowerBound.z) {}
+
+	const VoxelType& getColorAt(int x, int z)
+	{
+		int localX = x - mLowerCorner.x;
+		int localZ = z - mLowerCorner.y;
+		return mColors[localX][localZ];
+	}
+
+	void setColorAt(int x, int y, int z, const VoxelType& val)
+	{
+		if (y < mHighestVoxel) { return; }
+
+		int localX = x - mLowerCorner.x;
+		int localZ = z - mLowerCorner.y;
+		mColors[localX][localZ] = val;
+
+		mHighestVoxel = y;
+	}
+};
+
 struct KeyHash_GLMIVec3
 {
 	size_t operator()(const glm::ivec3& k) const
@@ -2781,6 +2808,7 @@ struct KeyEqual_GLMIVec3
 };
 
 std::unordered_map<glm::ivec3, std::unique_ptr<VolumeChunk>, KeyHash_GLMIVec3, KeyEqual_GLMIVec3> mChunks;
+std::unordered_map<glm::ivec3, std::unique_ptr<ChunkMinimapColormap>, KeyHash_GLMIVec3, KeyEqual_GLMIVec3> mChunkMinimapColors;
 
 VolumeChunk* initChunk(int x, int y, int z)
 {
@@ -2803,8 +2831,17 @@ void setVoxel(int x, int y, int z, unsigned char r, unsigned char g, unsigned ch
 	if (mChunks.count(chunkPos) == 0) { chunk = initChunk(chunkPos.x, chunkPos.y, chunkPos.z); }
 	else { chunk = mChunks[chunkPos].get(); }
 
-	if (!chunk->mVolume->setVoxelAt(x, y, z, VoxelType(r, g, b, 255))) { printf("Failed to set voxel! (%d, %d, %d)\n", x, y, z); return; }
+	VoxelType vtype(r, g, b, 255);
+	if (!chunk->mVolume->setVoxelAt(x, y, z, vtype)) { printf("Failed to set voxel! (%d, %d, %d)\n", x, y, z); return; }
 	chunk->mMeshNeedsUpdate = true;
+
+	// update minimap colors
+	glm::ivec3 chunkMiniPos(chunkPos.x, 0, chunkPos.z);
+	ChunkMinimapColormap* mini;
+	if (mChunkMinimapColors.count(chunkMiniPos) == 0) { mini = new ChunkMinimapColormap(chunk->mVolume->getEnclosingRegion().getLowerCorner()); mChunkMinimapColors[chunkMiniPos].reset(mini); }
+	else { mini = mChunkMinimapColors[chunkMiniPos].get(); }
+
+	mini->setColorAt(x, y, z, vtype);
 }
 
 const VoxelType& getVoxel(int x, int y, int z)
@@ -2819,6 +2856,27 @@ const VoxelType& getVoxel(int x, int y, int z)
 }
 
 const VoxelType& getVoxel(const glm::ivec3& pos) { return getVoxel(pos.x, pos.y, pos.z); }
+
+const VoxelType& getVoxelMinimapColor(int x, int z)
+{
+	glm::ivec3 chunkPos(std::floorf((float)x / 16.0f), 0, std::floorf((float)z / 16.0f));
+	if (mChunkMinimapColors.count(chunkPos) == 0) { return EmptyVoxelType; }
+	return mChunkMinimapColors[chunkPos]->getColorAt(x, z);
+}
+
+const int getHighestVoxelAt_todo(int x, int z)
+{
+	glm::ivec3 chunkPos(std::floorf((float)x / 16.0f), 0, std::floorf((float)z / 16.0f));
+	if (mChunkMinimapColors.count(chunkPos) == 0) { return 0; }
+	return mChunkMinimapColors[chunkPos]->mHighestVoxel;
+}
+
+const int getHighestVoxelAt(int x, int z)
+{
+	glm::ivec3 checkPos(x, 0, z);
+	while (getVoxel(checkPos).a != 0) { checkPos.y++; }
+	return checkPos.y;
+}
 
 int volumeRenderDistance = 3;
 int volumeMaxSurfaceExtractionThreads = 4;
@@ -3292,19 +3350,6 @@ namespace AStar
 
 #pragma endregion
 
-bool invalidPathfindNode(const glm::ivec2& node)
-{
-	return false; // temp
-
-	//if (node.x < 0 || node.y < 0 || node.x >= 57 || node.y >= 57) { return true; }
-	//if (mazeWalls[node.x][node.y][0] && mazeWalls[node.x][node.y][1] && mazeWalls[node.x][node.y][2] && mazeWalls[node.x][node.y][3]) { return true; }
-	//return false;
-}
-
-glm::ivec2 worldToMazePos(const glm::vec3& worldPos) { return glm::ivec2((int)std::floorf((worldPos.x + 200.0f) / 7.0f), (int)std::floorf((worldPos.z + 200.0f) / 7.0f)); }
-
-glm::vec3 mazeToWorldPos(const glm::ivec2& pos) { return glm::vec3(-200 + (pos.x * 7) + 3, 0.0f, -200 + (pos.y * 7) + 3); }
-
 #pragma region Combat Engine
 
 class ICombatSkill
@@ -3401,6 +3446,12 @@ float playerVerticalVelocity = 0.0f;
 
 glm::ivec3 getPlayerPositionVoxelPos() { return glm::ivec3((int)(cx < 0 ? std::ceilf(cx) - 1 : std::floorf(cx)), (int)(cy < 0 ? std::ceilf(cy) - 1 : std::floorf(cy)), (int)(cz < 0 ? std::ceilf(cz) - 1 : std::floorf(cz))); }
 
+std::unique_ptr<AxisAlignedBoundingBox> physicalBounds;
+
+void enablePhysicalBounds(const AxisAlignedBoundingBox& aabb) { physicalBounds.reset(new AxisAlignedBoundingBox(aabb.getLowerBound(), aabb.getHigherBound())); }
+
+void disablePhysicalBounds() { physicalBounds.reset(); }
+
 // apply physics based on voxel terrain
 class PhysicalEnvironment
 {
@@ -3493,6 +3544,17 @@ public:
 				if (cz < oldLower.z && getVoxel(curVoxelPos.x, 0, newVoxelPos.z).a != 0) { cz = oldLower.z; }
 				if (cz > oldHigher.z && getVoxel(curVoxelPos.x, 0, newVoxelPos.z).a != 0) { cz = oldHigher.z; }
 			}
+		}
+
+		// enforce hard boundaries
+		if (physicalBounds.get())
+		{
+			if (cx < physicalBounds->getLowerBound().x) { cx = physicalBounds->getLowerBound().x; }
+			if (cy < physicalBounds->getLowerBound().y) { cy = physicalBounds->getLowerBound().y; }
+			if (cz < physicalBounds->getLowerBound().z) { cz = physicalBounds->getLowerBound().z; }
+			if (cx > physicalBounds->getHigherBound().x) { cx = physicalBounds->getHigherBound().x; }
+			if (cy > physicalBounds->getHigherBound().y) { cy = physicalBounds->getHigherBound().y; }
+			if (cz > physicalBounds->getHigherBound().z) { cz = physicalBounds->getHigherBound().z; }
 		}
 	}
 };
@@ -3753,6 +3815,14 @@ void drawSnowMan() {
 	glutSolidCone(0.08f, 0.5f, 10, 2);
 }
 
+class IEnemyMovementController
+{
+public:
+	virtual bool invalidPathfindNode(const glm::ivec2& node) = 0;
+	virtual glm::ivec2 worldToMazePos(const glm::vec3& worldPos) = 0;
+	virtual glm::vec3 mazeToWorldPos(const glm::ivec2& pos) = 0;
+};
+
 class Enemy : public CombatEntity
 {
 private:
@@ -3762,6 +3832,7 @@ private:
 	std::vector<glm::ivec2> mLatestPathfindPath;
 	bool mNewerPathfindAvailable = false;
 	bool mCurrentlyPathfinding = false;
+	IEnemyMovementController* mMovementController;
 
 	int mHP = 5;
 	int mMaxHP = 5;
@@ -3774,16 +3845,18 @@ private:
 	{
 		enemy->mCurrentlyPathfinding = true;
 		AStar::Pathfinder pathfinder;
-		enemy->mLatestPathfindPath = pathfinder.findPath(startPos, targetPos, invalidPathfindNode);
+		enemy->mLatestPathfindPath = pathfinder.findPath(startPos, targetPos, [&](const glm::ivec2& pos) { return enemy->mMovementController->invalidPathfindNode(pos); });
 		enemy->mNewerPathfindAvailable = true;
 		enemy->mCurrentlyPathfinding = false;
 	}
 
 public:
-	Enemy(const glm::vec3& pos) { setPosition(pos); }
+	Enemy(const glm::vec3& pos, IEnemyMovementController* moveController) : mMovementController(moveController) { setPosition(pos); }
 
 	void update(float elapsed)
 	{
+		if (!mMovementController) { return; }
+
 		glm::vec3 playerPos(cx, 0.0f, cz);
 		float distToPlayer = glm::distance(mPosition, playerPos);
 
@@ -3802,9 +3875,9 @@ public:
 			{
 				mLastPathfindCalcTime = Tools::currentTimeMillis();
 
-				glm::ivec2 startPos(worldToMazePos(mPosition));
-				glm::ivec2 targetPos(worldToMazePos(playerPos));
-				if (!invalidPathfindNode(startPos) && !invalidPathfindNode(targetPos)) // invalid endpoints crash
+				glm::ivec2 startPos(mMovementController->worldToMazePos(mPosition));
+				glm::ivec2 targetPos(mMovementController->worldToMazePos(playerPos));
+				if (!mMovementController->invalidPathfindNode(startPos) && !mMovementController->invalidPathfindNode(targetPos)) // invalid endpoints crash
 				{
 					std::thread t(std::bind(calculateMovementPath, this, startPos, targetPos));
 					t.detach();
@@ -3819,9 +3892,9 @@ public:
 		// recalculate movement direction
 		if (mPathfindPath.size() > 1)
 		{
-			if (glm::distance(mPosition, mazeToWorldPos(mPathfindPath[0])) < 0.5f) { mPathfindPath.erase(mPathfindPath.begin()); }
+			if (glm::distance(mPosition, mMovementController->mazeToWorldPos(mPathfindPath[0])) < 0.5f) { mPathfindPath.erase(mPathfindPath.begin()); }
 
-			mMoveDirection = mazeToWorldPos(mPathfindPath[0]) - mPosition;
+			mMoveDirection = mMovementController->mazeToWorldPos(mPathfindPath[0]) - mPosition;
 			mMoveDirection = glm::normalize(mMoveDirection);
 		}
 		else if (distToPlayer <= 7.0f)
@@ -3883,6 +3956,7 @@ private:
 	glm::vec3 mPosition;
 	long long mNextSpawnTime;
 	int mSpawnedEnemies;
+	IEnemyMovementController* mMovementController;
 
 	class MobListener : public ICombatEntityListener
 	{
@@ -3901,7 +3975,8 @@ private:
 	std::unique_ptr<MobListener> mMobListener;
 
 public:
-	EnemySpawnPoint(const glm::vec3& pos) : mPosition(pos), mNextSpawnTime(0), mSpawnedEnemies(0) { mMobListener.reset(new MobListener(this)); }
+	EnemySpawnPoint(const glm::vec3& pos, IEnemyMovementController* moveController) : mPosition(pos), mNextSpawnTime(0), mSpawnedEnemies(0), mMovementController(moveController)
+	{ mMobListener.reset(new MobListener(this)); }
 
 	const glm::vec3& getPosition() const { return mPosition; }
 
@@ -3913,7 +3988,7 @@ public:
 
 	Enemy* getEnemy()
 	{
-		Enemy* newEnemy = new Enemy(mPosition);
+		Enemy* newEnemy = new Enemy(mPosition, mMovementController);
 		newEnemy->addListener(mMobListener.get());
 		
 		mNextSpawnTime = Tools::currentTimeMillis() + 10000;
@@ -4099,12 +4174,58 @@ ItemInfo* getItemInfo(int id) { return registeredItems.count(id) > 0 ? registere
 
 #pragma endregion
 
+#pragma region Portal Interface
+
+bool isPlayerNearAnyPortal(); // TODO: TEMP, UGLY TO PUT HERE
+
+class Portal
+{
+private:
+	glm::ivec3 mPosition;
+	std::string mName;
+
+public:
+	Portal(const glm::ivec3& pos, const std::string& name) : mPosition(pos), mName(name) {}
+
+	const glm::ivec3& getPosition() const { return mPosition; }
+	void setPosition(const glm::ivec3& pos) { mPosition = pos; }
+	const std::string& getName() const { return mName; }
+
+	void draw()
+	{
+		glm::vec3 clr = isPlayerNearAnyPortal() ? glm::vec3(0.35f, 0.65f, 0.15f) : glm::vec3(0.25f, 0.25f, 0.8f);
+		glColor4f(clr.r, clr.g, clr.b, 0.75f);
+
+		glPushMatrix();
+		glTranslatef((float)mPosition.x, (float)mPosition.y, (float)mPosition.z);
+		glTranslatef(0.5f, 0.875f, 0.5f);
+		glScalef(1.0f, 1.75f, 1.0f);
+		glutSolidSphere(1.0, 10, 10);
+		glPopMatrix();
+	}
+
+	bool isPlayerNearby() { return glm::distance(glm::vec3(cx, cy, cz), glm::vec3(mPosition)) <= 3.0f; }
+};
+
+std::vector<std::unique_ptr<Portal>> portals;
+
+void addPortal(int x, int y, int z, const std::string& name) { portals.push_back(std::unique_ptr<Portal>(new Portal(glm::ivec3(x, y, z), name))); }
+
+bool isPlayerNearAnyPortal()
+{
+	for (auto& portal : portals) { if (portal->isPlayerNearby()) { return true; } }
+	return false;
+}
+
+#pragma endregion
+
 #pragma region User Interface
 
 glm::ivec2 currentMousePos;
 
 std::string to_string(const glm::vec3& v) { return std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z); }
 std::string to_string(const glm::ivec3& v) { return std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z); }
+std::string to_string(const glm::ivec2& v) { return std::to_string(v.x) + ", " + std::to_string(v.y); }
 
 int calcProgressWidth(int val, int valMax, int fullSize) { return (int)(((float)val / (float)valMax) * (float)fullSize); }
 
@@ -4175,6 +4296,7 @@ protected:
 	virtual void draw() = 0;
 	virtual void click(int x, int y) {}
 	virtual void mouseMove(int x, int y) {}
+	virtual void mouseDrag(int x, int y) {}
 
 public:
 	UIWindow(const glm::ivec2& pos, const glm::ivec2& size, const std::string& title) : mPosition(pos), mSize(size), mTitle(title) {}
@@ -4231,6 +4353,13 @@ public:
 		if (!mVisible) { return; }
 
 		mouseMove(currentMousePos.x - mPosition.x - mClientAreaOffset.x, currentMousePos.y - mPosition.y - mClientAreaOffset.y);
+	}
+
+	void onMouseDrag(int x, int y)
+	{
+		if (!mVisible) { return; }
+
+		mouseDrag(x - mPosition.x - mClientAreaOffset.x, y - mPosition.y - mClientAreaOffset.y);
 	}
 };
 
@@ -4594,7 +4723,7 @@ protected:
 			glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
 			quad(keybind.second.position.x, keybind.second.position.y, keybind.second.size.x, keybind.second.size.y);
 			glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-			text(5 + keybind.second.position.x, 25 + keybind.second.position.y, GLUT_BITMAP_9_BY_15, std::to_string(keybind.second.keycode));
+			text(5 + keybind.second.position.x, 25 + keybind.second.position.y, GLUT_BITMAP_9_BY_15, keybind.second.text);
 		}
 	}
 
@@ -4619,17 +4748,185 @@ public:
 	KeybindingWindow() : UIWindow(glm::ivec2(200, 400), glm::ivec2(700, 300), "Keybinding") {}
 };
 
-void initKeybindings()
+void initKeybindInfo(int x, int y, int keycode, const std::string& text, int sx)
 {
-	keybinds[0].keycode = 0;
-	keybinds[0].position = glm::ivec2(10, 10);
-	keybinds[0].size = glm::ivec2(32, 32);
-	keybinds[0].text = "test";
+	Keybinding keybind;
+	keybind.position = glm::ivec2(x, y);
+	keybind.size = glm::ivec2(sx, 30);
+	keybind.text = text;
+	keybind.keycode = keycode;
+	keybinds[keycode] = keybind;
 }
 
-void registerKeybinding(int keycode, Keybinding::Type actionType, LearnedSkill* skill, Item* item) {}
+void initKeybindInfo(int x, int y, int keycode, const std::string& text) { initKeybindInfo(x, y, keycode, text, 30); }
+
+void initKeybindings()
+{
+	// number row
+	int row1baseX = 10;
+	int row1baseY = 10;
+	initKeybindInfo(row1baseX, row1baseY, 0, "`~");
+	initKeybindInfo(row1baseX + 30 + 10, row1baseY, 1, "1");
+	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10, row1baseY, 2, "2");
+	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 3, "3");
+	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 4, "4");
+	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 5, "5");
+	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 6, "6");
+	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 7, "7");
+	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 8, "8");
+	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 9, "9");
+	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 10, "0");
+	// first letter row
+	int row2baseX = row1baseX + 30 + 10 + 15;
+	int row2baseY = row1baseY + 30 + 10;
+	initKeybindInfo(row1baseX, row2baseY, 100, "Tab", 45);
+	initKeybindInfo(row2baseX, row2baseY, 11, "Q");
+	initKeybindInfo(row2baseX + 30 + 10, row2baseY, 12, "W");
+	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10, row2baseY, 13, "E");
+	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 14, "R");
+	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 15, "T");
+	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 16, "Y");
+	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 17, "U");
+	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 18, "I");
+	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 19, "O");
+	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 20, "P");
+	// second letter row
+	int row3baseX = row2baseX + 15;
+	int row3baseY = row2baseY + 30 + 10;
+	initKeybindInfo(row1baseX, row3baseY, 101, "CpLock", 60);
+	initKeybindInfo(row3baseX, row3baseY, 21, "A");
+	initKeybindInfo(row3baseX + 30 + 10, row3baseY, 22, "S");
+	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10, row3baseY, 23, "D");
+	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 24, "F");
+	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 25, "G");
+	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 26, "H");
+	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 27, "J");
+	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 28, "K");
+	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 29, "L");
+	// third letter row
+	int row4baseX = row3baseX + 15;
+	int row4baseY = row3baseY + 30 + 10;
+	initKeybindInfo(row1baseX, row4baseY, 102, "Shift", 75);
+	initKeybindInfo(row4baseX, row4baseY, 30, "Z");
+	initKeybindInfo(row4baseX + 30 + 10, row4baseY, 31, "X");
+	initKeybindInfo(row4baseX + 30 + 10 + 30 + 10, row4baseY, 32, "C");
+	initKeybindInfo(row4baseX + 30 + 10 + 30 + 10 + 30 + 10, row4baseY, 33, "V");
+	initKeybindInfo(row4baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row4baseY, 34, "B");
+	initKeybindInfo(row4baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row4baseY, 35, "N");
+	initKeybindInfo(row4baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row4baseY, 36, "M");
+	// spacebar row
+	int row5baseY = row4baseY + 30 + 10;
+}
+
+void registerKeybindAction(int keycode, Keybinding::Type actionType, LearnedSkill* skill, Item* item) {}
 
 #pragma endregion
+
+class WorldMapWarpDialogueWindow : public IDialogueWindow
+{
+private:
+	Portal* mPortal;
+
+public:
+	WorldMapWarpDialogueWindow(Portal* portal) : mPortal(portal) {}
+
+	virtual std::string getMessage() { return "Do you want to warp to \"" + mPortal->getName() + "\"?"; }
+
+	virtual void onOk()
+	{
+		cx = mPortal->getPosition().x + 0.5f;
+		cy = mPortal->getPosition().y + 0.5f;
+		cz = mPortal->getPosition().z + 0.5f;
+	}
+};
+
+class WorldMapWindow : public UIWindow
+{
+private:
+	glm::ivec2 mDisplayOffset;
+	glm::ivec2 mDragStart;
+	glm::ivec2 mDragDisplayOffset;
+
+protected:
+	virtual void draw()
+	{
+		for (int x = 0; x < 670; x++)
+		{
+			for (int z = 0; z < 500; z++)
+			{
+				const VoxelType& type = getVoxelMinimapColor(mDisplayOffset.x + x, mDisplayOffset.y + z);
+				if (type.a != 0)
+				{
+					glm::vec3 clr = type.toVertexColor();
+					glColor4f(clr.r, clr.g, clr.b, BYTE_TO_FLOAT_COLOR(type.a));
+					quad(10 + x, 10 + z, 1, 1);
+				}
+			}
+		}
+
+		// draw portals
+		glm::vec3 clr = isPlayerNearAnyPortal() ? glm::vec3(0.35f, 0.65f, 0.15f) : glm::vec3(0.25f, 0.25f, 0.8f);
+		glColor4f(clr.r, clr.g, clr.b, 0.75f);
+		for (auto& portal : portals)
+		{
+			quad(10 + -mDisplayOffset.x + portal->getPosition().x - 5, 10 + -mDisplayOffset.y + portal->getPosition().z - 5, 11, 11);
+		}
+
+		// draw player position
+		glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
+		quad(10 + -mDisplayOffset.x + (int)cx - 5, 10 + -mDisplayOffset.y + (int)cz - 5, 11, 11);
+
+		// list all the portals on the side with their position
+		for (unsigned int i = 0; i < portals.size(); i++)
+		{
+			text(690, 30 + (i * 20), GLUT_BITMAP_HELVETICA_18, portals[i]->getName() + " (" + to_string(portals[i]->getPosition()) + ")");
+		}
+
+		// show current display offset
+		text(10, 540, GLUT_BITMAP_HELVETICA_18, "Showing (" + to_string(mDisplayOffset) + ") to (" + to_string(glm::ivec2(mDisplayOffset.x + 670, mDisplayOffset.y + 500)) + ")");
+	}
+
+	virtual void click(int x, int y)
+	{
+		for (auto& portal : portals)
+		{
+			glm::ivec2 rectLower(10 + -mDisplayOffset.x + portal->getPosition().x - 5, 10 + -mDisplayOffset.y + portal->getPosition().z - 5);
+			glm::ivec2 rectHigher(11, 11);
+			rectHigher += rectLower;
+			if (x >= rectLower.x && x <= rectHigher.x && y >= rectLower.y && y <= rectHigher.y)
+			{
+				if (isPlayerNearAnyPortal()) { showDialogueWindow(new WorldMapWarpDialogueWindow(portal.get())); }
+				else { addInformationHistory("You must be near a portal to warp to another one."); }
+				break;
+			}
+		}
+
+		mDragStart.x = x;
+		mDragStart.y = y;
+		mDragDisplayOffset = mDisplayOffset;
+	}
+
+	virtual void mouseDrag(int x, int y)
+	{
+		glm::ivec2 diff = glm::ivec2(x, y) - mDragStart;
+		mDisplayOffset = mDragDisplayOffset - diff;
+	}
+
+public:
+	WorldMapWindow() : UIWindow(glm::ivec2(200, 100), glm::ivec2(1200, 580), "World Map"), mDisplayOffset(0, 0) {}
+};
+
+class FuckYouWindow : public UIWindow
+{
+protected:
+	virtual void draw()
+	{
+		text(30, 30, GLUT_BITMAP_HELVETICA_18, "fuck you");
+	}
+
+public:
+	FuckYouWindow() : UIWindow(glm::ivec2(95, 95), glm::ivec2(330, 345), "Fuck You") {}
+};
 
 #pragma endregion
 
@@ -5021,31 +5318,175 @@ private:
 	int p[512];
 };
 
-void setTree(int x, int y, int z)
+PerlinNoise noise;
+
+bool operator >= (const glm::ivec3& v1, const glm::ivec3& v2) { return v1.x >= v2.x && v1.y >= v2.y && v1.z >= v2.z; }
+bool operator <= (const glm::ivec3& v1, const glm::ivec3& v2) { return v1.x <= v2.x && v1.y <= v2.y && v1.z <= v2.z; }
+
+class TerrainTree
 {
-	int height = getRandomInt(4, 8);
-	glm::ivec3 shape(getRandomInt(2, 7), getRandomInt(1, height / 2), getRandomInt(2, 7));
-	for (int i = 0; i < height; i++) { setVoxel(x, y + i, z, 137, getRandomInt(30, 90), 0); } // trunk
-	for (int xx = x - shape.x; xx < x + shape.x; xx++)
+private:
+	glm::ivec3 position;
+	int height;
+	glm::ivec3 shape;
+	std::vector<glm::ivec3> effectedChunks;
+	std::vector<glm::ivec3> loadedChunks;
+	std::vector<glm::ivec3> unloadedChunks;
+
+public:
+	TerrainTree(int x, int y, int z)
 	{
-		for (int yy = y - shape.y; yy < y + shape.y; yy++)
+		position = glm::ivec3(x, y, z);
+		height = getRandomInt(4, 8);
+		shape = glm::ivec3(getRandomInt(2, 7), getRandomInt(1, height / 2), getRandomInt(2, 7));
+
+		// calculate relevant chunks
+		glm::ivec3 chunkStart(getVoxelChunkPos(x, y, z));
+		// TODO: this technically doesn't consider x/z offsets on y axis when height overflows. invisible because of current usage contexts
+		effectedChunks.push_back(chunkStart);
+		//if (position.y + height + shape.y > chunkStart.y + 16) { effectedChunks.push_back(glm::ivec3(x, y + 1, z)); }
+		if (position.x - shape.x < chunkStart.x) { effectedChunks.push_back(glm::ivec3(chunkStart.x - 1, chunkStart.y, chunkStart.z)); }
+		if (position.x + shape.x > chunkStart.x + 16) { effectedChunks.push_back(glm::ivec3(chunkStart.x + 1, chunkStart.y, chunkStart.z)); }
+		if (position.z - shape.z < chunkStart.z) { effectedChunks.push_back(glm::ivec3(chunkStart.x, chunkStart.y, chunkStart.z - 1)); }
+		if (position.z + shape.z > chunkStart.z + 16) { effectedChunks.push_back(glm::ivec3(chunkStart.x, chunkStart.y, chunkStart.z + 1)); }
+		
+		// mark all effected chunks as unloaded
+		for (auto it : effectedChunks) { unloadedChunks.push_back(it); }
+	}
+
+	void loadChunk(int x, int y, int z)
+	{
+		// check if this is an unloaded chunk
+		bool doLoad = false;
+		unsigned int i = 0;
+		for (i = 0; i < unloadedChunks.size(); i++)
 		{
-			for (int zz = z - shape.z; zz < z + shape.z; zz++)
+			const glm::ivec3& vec = unloadedChunks[i];
+			if (vec.x == x && vec.y == y && vec.z == z)
 			{
-				if (getRandomInt(1, 10) >= 3)
+				doLoad = true;
+				break;
+			}
+		}
+
+		// draw relevant portion in this chunk, only if unloaded
+		if (!doLoad) { return; }
+
+		glm::ivec3 chunkStart(x * 16, y * 16, z * 16);
+		glm::ivec3 chunkEnd(16, 16, 16);
+		chunkEnd += chunkStart;
+
+		// trunk
+		if (position >= chunkStart && position <= chunkEnd)
+		{
+			for (int i = 0; i < height; i++) { setVoxel(position.x, position.y + i, position.z, 137, getRandomInt(30, 90), 0); }
+		}
+		// leaves
+		for (int xx = position.x - shape.x; xx <= position.x + shape.x; xx++)
+		{
+			for (int yy = position.y - shape.y; yy <= position.y + shape.y; yy++)
+			{
+				for (int zz = position.z - shape.z; zz <= position.z + shape.z; zz++)
 				{
-					setVoxel(xx, yy + height + (shape.y / 2), zz, getRandomInt(100, 135), getRandomInt(100, 135), 0);
+					glm::ivec3 curPos(xx, yy, zz);
+					if (curPos >= chunkStart && curPos <= chunkEnd)
+					{
+						if (getRandomInt(1, 10) >= 3)
+						{
+							setVoxel(xx, yy + height, zz, getRandomInt(100, 135), getRandomInt(100, 135), 0);
+						}
+					}
 				}
 			}
 		}
+
+		// mark as loaded
+		unloadedChunks.erase(unloadedChunks.begin() + i);
+		loadedChunks.push_back(glm::ivec3(x, y, z));
+	}
+
+	bool isLoaded() { return loadedChunks.size() == effectedChunks.size(); }
+};
+
+std::vector<std::unique_ptr<TerrainTree>> trees;
+
+// TODO: this system should be turned into an IChunkLoadListener architecture, functioning like an onLoad hook. saves lots of unnecessary iteration
+void loadTreeVoxelsForChunk(int x, int y, int z)
+{
+	for (auto it = trees.begin(); it != trees.end(); )
+	{
+		it->get()->loadChunk(x, y, z);
+		if (it->get()->isLoaded()) { it = trees.erase(it); }
+		else { it++; }
 	}
 }
+
+void setTree(int x, int y, int z) { trees.push_back(std::unique_ptr<TerrainTree>(new TerrainTree(x, y, z))); }
+
+class VisibleRegionBorder
+{
+private:
+	glm::vec3 pos;
+	glm::vec3 size;
+	glm::vec4 clr;
+
+public:
+	VisibleRegionBorder(const glm::vec3& _pos, const glm::vec3& _size) : pos(_pos), size(_size), clr(0.25f, 0.25f, 0.25f, 0.25f) {}
+
+	void setColor(float r, float g, float b, float a)
+	{
+		clr.r = r;
+		clr.g = g;
+		clr.b = b;
+		clr.a = a;
+	}
+
+	void draw()
+	{
+		glColor4f(clr.r, clr.g, clr.b, clr.a);
+
+		glBegin(GL_QUADS);
+
+		// front
+		glVertex3f(pos.x, 100.0f, pos.z);
+		glVertex3f(pos.x + size.x, 100.0f, pos.z);
+		glVertex3f(pos.x + size.x, 0.0f, pos.z);
+		glVertex3f(pos.x, 0.0f, pos.z);
+
+		// back
+		glVertex3f(pos.x, 100.0f, pos.z + size.z);
+		glVertex3f(pos.x + size.x, 100.0f, pos.z + size.z);
+		glVertex3f(pos.x + size.x, 0.0f, pos.z + size.z);
+		glVertex3f(pos.x, 0.0f, pos.z + size.z);
+
+		// left
+		glVertex3f(pos.x, 100.0f, pos.z);
+		glVertex3f(pos.x, 100.0f, pos.z + size.z);
+		glVertex3f(pos.x, 0.0f, pos.z + size.z);
+		glVertex3f(pos.x, 0.0f, pos.z);
+
+		// right
+		glVertex3f(pos.x + size.x, 100.0f, pos.z);
+		glVertex3f(pos.x + size.x, 100.0f, pos.z + size.z);
+		glVertex3f(pos.x + size.x, 0.0f, pos.z + size.z);
+		glVertex3f(pos.x + size.x, 0.0f, pos.z);
+
+		glEnd();
+	}
+};
+
+std::vector<std::unique_ptr<VisibleRegionBorder>> visibleRegionBorders;
+
+void addVisibleRegionBorder(VisibleRegionBorder* border) { visibleRegionBorders.push_back(std::unique_ptr<VisibleRegionBorder>(border)); }
 
 class Dungeon
 {
 private:
 	glm::ivec3 mPosition;
 	glm::ivec3 mSize;
+	bool mActivatable = true;
+	bool mActivated = false;
+
 	bool mazeWalls[57][57][4];
 	glm::ivec2 mazeCurPos;
 	int mazeMoveLimit = 300;
@@ -5171,17 +5612,34 @@ private:
 		}
 	}
 
-	void loadChunks()
+	class DungeonEnemyMovementController : public IEnemyMovementController
 	{
-		// base terrain floor and edges
-		for (int x = mPosition.x; x < mSize.x * 16; x++)
+	private:
+		Dungeon* mDungeon;
+
+	public:
+		DungeonEnemyMovementController(Dungeon* dungeon) : mDungeon(dungeon) {}
+
+		virtual bool invalidPathfindNode(const glm::ivec2& node)
 		{
-			for (int z = mPosition.z; z < mSize.z * 16; z++)
-			{
-				setVoxel(x, -1, z, randomNumber(0, 30), randomNumber(100, 255), randomNumber(0, 30));
-				//if (x == -200 || x == 200 || z == -200 || z == 200) { setVoxel(x, 0, z, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15)); }
-			}
+			if (node.x < 0 || node.y < 0 || node.x >= 57 || node.y >= 57) { return true; }
+			if (mDungeon->mazeWalls[node.x][node.y][0] && mDungeon->mazeWalls[node.x][node.y][1] && mDungeon->mazeWalls[node.x][node.y][2] && mDungeon->mazeWalls[node.x][node.y][3]) { return true; }
+			return false;
 		}
+
+		virtual glm::ivec2 worldToMazePos(const glm::vec3& worldPos) { return glm::ivec2((int)std::floorf((worldPos.x - mDungeon->mPosition.x) / 16.0f), (int)std::floorf((worldPos.z - mDungeon->mPosition.z) / 16.0f)); }
+
+		virtual glm::vec3 mazeToWorldPos(const glm::ivec2& pos) { return glm::vec3(mDungeon->mPosition.x + (pos.x * 16) + 8, 0.0f, mDungeon->mPosition.z + (pos.y * 16) + 8); }
+	};
+
+	std::unique_ptr<DungeonEnemyMovementController> mMovementController;
+
+	VisibleRegionBorder* mVisibleBorder;
+
+public:
+	Dungeon(int x, int z) : mPosition(x, 0, z), mSize(57, 6, 57)
+	{
+		mMovementController.reset(new DungeonEnemyMovementController(this));
 
 		// generate and apply pathing
 		mazeCurPos = glm::ivec2(randomNumber(0, 56), randomNumber(0, 56));
@@ -5190,83 +5648,23 @@ private:
 		//cz = (float)mPosition.z + (float)(mazeCurPos.y * 7) + 4;
 		mazeGenerate();
 
-		for (int x = 0; x < mSize.x; x++)
-		{
-			for (int z = 0; z < mSize.z; z++)
-			{
-				int baseX = mPosition.x + (x * 16);
-				int baseZ = mPosition.z + (z * 16);
-
-				// place walls on voxel terrain for each walled off direction of the cell
-				for (int wall = 0; wall < 4; wall++) { if (mazeWalls[x][z][wall]) { generateMazeWallVoxels(baseX, baseZ, (MazeWall)wall); } }
-
-				// fill in the center of completely walled off cells
-				if (mazeWalls[x][z][0] && mazeWalls[x][z][1] && mazeWalls[x][z][2] && mazeWalls[x][z][3])
-				{
-					for (int xx = 0; xx < 14; xx++)
-					{
-						for (int zz = 0; zz < 14; zz++)
-						{
-							setVoxel(baseX + 1 + xx, 0, baseZ + 1 + zz, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15));
-						}
-					}
-
-					// also add a tree in the center
-					setTree(baseX + getRandomInt(3, 10), 0, baseZ + getRandomInt(3, 10));
-				}
-			}
-		}
-
 		// load spawnpoints
 		for (int i = 0; i < 10; i++)
 		{
 			glm::ivec2 pos = mazeClearedTiles[randomNumber(3, mazeClearedTiles.size() - 1)];
-			spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(mPosition.x + (pos.x * 16) + 3, 0.0f, mPosition.z + (pos.y * 16) + 3))));
+			spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(mPosition.x + (pos.x * 16) + 3, 0.0f, mPosition.z + (pos.y * 16) + 3), mMovementController.get())));
 		}
 
 		// add wave enter npc
 		//loadNPC(2, glm::vec3(cx - 3, 0, cz - 3));
-	}
 
-public:
-	Dungeon(int x, int z) : mPosition(x, 0, z), mSize(57, 1, 57) { loadChunks(); }
-
-	void drawBorder()
-	{
+		// add visible border
 		glm::vec3 pos((float)mPosition.x, (float)mPosition.y, (float)mPosition.z);
 		glm::vec3 size((float)mSize.x, (float)mSize.y, (float)mSize.z);
 		size *= 16;
-
-		bool inside = isPlayerInside();
-		glColor4f(inside ? 1.0f : 0.0f, 0.2f, inside ? 0.0f : 1.0f, 0.75f);
-
-		glBegin(GL_QUADS);
-
-		// front
-		glVertex3f(pos.x, 100.0f, pos.z);
-		glVertex3f(pos.x + size.x, 100.0f, pos.z);
-		glVertex3f(pos.x + size.x, 0.0f, pos.z);
-		glVertex3f(pos.x, 0.0f, pos.z);
-
-		// back
-		glVertex3f(pos.x, 100.0f, pos.z + size.z);
-		glVertex3f(pos.x + size.x, 100.0f, pos.z + size.z);
-		glVertex3f(pos.x + size.x, 0.0f, pos.z + size.z);
-		glVertex3f(pos.x, 0.0f, pos.z + size.z);
-
-		// left
-		glVertex3f(pos.x, 100.0f, pos.z);
-		glVertex3f(pos.x, 100.0f, pos.z + size.z);
-		glVertex3f(pos.x, 0.0f, pos.z + size.z);
-		glVertex3f(pos.x, 0.0f, pos.z);
-
-		// right
-		glVertex3f(pos.x + size.x, 100.0f, pos.z);
-		glVertex3f(pos.x + size.x, 100.0f, pos.z + size.z);
-		glVertex3f(pos.x + size.x, 0.0f, pos.z + size.z);
-		glVertex3f(pos.x + size.x, 0.0f, pos.z);
-
-		glEnd();
+		mVisibleBorder = new VisibleRegionBorder(pos, size);
+		addVisibleRegionBorder(mVisibleBorder);
+		setActivated(false);
 	}
 
 	bool usesChunk(int x, int y, int z)
@@ -5281,6 +5679,60 @@ public:
 	bool usesChunk(const glm::ivec3& pos) { return usesChunk(pos.x, pos.y, pos.z); }
 
 	bool isPlayerInside() { return usesChunk(getVoxelChunkPos(getPlayerPositionVoxelPos())); }
+
+	AxisAlignedBoundingBox getWorldBoundingBox()
+	{
+		glm::vec3 startPos((float)mPosition.x, (float)mPosition.y, (float)mPosition.z);
+		glm::vec3 worldSize((float)mSize.x * 16.0f, (float)mSize.y * 16.0f, (float)mSize.z * 16.0f);
+		return AxisAlignedBoundingBox(startPos, startPos + worldSize);
+	}
+
+	const bool& isActivatable() const { return mActivatable; }
+	void setActivatable(bool a) { mActivatable = a; }
+	void setActivated(bool activated)
+	{
+		mActivated = activated;
+		mVisibleBorder->setColor(mActivated ? 1.0f : 0.0f, 0.2f, mActivated ? 0.0f : 1.0f, 0.75f);
+	}
+
+	void loadChunk(int x, int y, int z)
+	{
+		if (y != 0) { return; }
+
+		glm::ivec3 chunkStart(x * 16, y * 16, z * 16);
+
+		// base terrain floor (light grass)
+		for (int x = 0; x < 16; x++)
+		{
+			for (int z = 0; z < 16; z++)
+			{
+				setVoxel(chunkStart.x + x, -1, chunkStart.z + z, randomNumber(0, 30), randomNumber(100, 255), randomNumber(0, 30));
+				//if (x == -200 || x == 200 || z == -200 || z == 200) { setVoxel(x, 0, z, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15)); }
+			}
+		}
+
+		// walls
+		int cellX = x - (mPosition.x / 16);
+		int cellZ = z - (mPosition.z / 16);
+
+		// place walls on voxel terrain for each walled off direction of the cell
+		for (int wall = 0; wall < 4; wall++) { if (mazeWalls[cellX][cellZ][wall]) { generateMazeWallVoxels(chunkStart.x, chunkStart.z, (MazeWall)wall); } }
+
+		// fill in the center of completely walled off cells
+		if (mazeWalls[cellX][cellZ][0] && mazeWalls[cellX][cellZ][1] && mazeWalls[cellX][cellZ][2] && mazeWalls[cellX][cellZ][3])
+		{
+			for (int xx = 0; xx < 14; xx++)
+			{
+				for (int zz = 0; zz < 14; zz++)
+				{
+					setVoxel(chunkStart.x + 1 + xx, 0, chunkStart.z + 1 + zz, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15));
+				}
+			}
+
+			// also add a tree in the center
+			setTree(chunkStart.x + getRandomInt(3, 10), 0, chunkStart.z + getRandomInt(3, 10));
+		}
+	}
 };
 
 #pragma endregion
@@ -5597,19 +6049,43 @@ std::unique_ptr<ICombatEntityListener> enemyDropItemListener;
 #pragma region Map Loading
 
 std::vector<std::unique_ptr<Dungeon>> dungeons;
+Dungeon* activeDungeon = 0;
 
-bool isDungeonChunk(int x, int y, int z)
+Dungeon* getChunkDungeon(int x, int y, int z)
 {
 	for (auto& dungeon : dungeons)
 	{
-		if (dungeon->usesChunk(x, y, z)) { return true; }
+		if (dungeon->usesChunk(x, y, z)) { return dungeon.get(); }
 	}
-	return false;
+	return 0;
+}
+
+void initNoiseChunk(int x, int y, int z)
+{
+	int xxStart = x * 16;
+	int yyStart = y * 16;
+	int zzStart = z * 16;
+
+	for (int xx = xxStart; xx < xxStart + 16; xx++)
+	{
+		for (int yy = yyStart; yy < yyStart + 16; yy++)
+		{
+			for (int zz = zzStart; zz < zzStart + 16; zz++)
+			{
+				double n = noise.noise((double)xx / 128.0, (double)yy / 128.0, (double)zz / 128.0);
+				n += 1.0; // temporarily push all generation into positive space. physics fucks up at cy < 0
+				n *= 16.0;
+				if (yy <= (int)std::floor(n))
+				{
+					setVoxel(xx, yy, zz, randomNumber(0, 30), randomNumber(100, 255), randomNumber(0, 30));
+				}
+			}
+		}
+	}
 }
 
 void loadNewChunks()
 {
-	PerlinNoise noise;
 	glm::ivec3 playerVoxel(getPlayerPositionVoxelPos());
 	glm::ivec3 curChunk(getVoxelChunkPos(playerVoxel.x, playerVoxel.y, playerVoxel.z));
 
@@ -5622,39 +6098,19 @@ void loadNewChunks()
 		{
 			for (int z = curChunk.z - volumeRenderDistance; z <= curChunk.z + volumeRenderDistance; z++)
 			{
-				// don't auto-generate noise on dungeon terrain
-				if (isDungeonChunk(x, y, z)) { continue; }
-
-				// dynamically load terrain using perlin
+				// dynamically load terrain
 				if (mChunks.count(glm::ivec3(x, y, z)) == 0)
 				{
-					// load unloaded chunk near range
-					int xxStart = x * 16;
-					int yyStart = y * 16;
-					int zzStart = z * 16;
+					// don't auto-generate noise on dungeon terrain, use dungeon chunk generation instead
+					Dungeon* chunkDungeon = getChunkDungeon(x, y, z);
+					if (chunkDungeon) { chunkDungeon->loadChunk(x, y, z); continue; }
 
-					for (int xx = xxStart; xx < xxStart + 16; xx++)
-					{
-						for (int yy = yyStart; yy < yyStart + 16; yy++)
-						{
-							for (int zz = zzStart; zz < zzStart + 16; zz++)
-							{
-								double n = noise.noise((double)xx / 128.0, (double)yy / 128.0, (double)zz / 128.0);
-								n += 1.0; // temporarily push all generation into positive space. physics fucks up at cy < 0
-								n *= 16.0;
-								if (yy <= (int)std::floor(n))
-								{
-									setVoxel(xx, yy, zz, randomNumber(0, 30), randomNumber(100, 255), randomNumber(0, 30));
-								}
-							}
-						}
-					}
-
-					// add it for tree processing if not on the edges (don't want trees to fuck up perlin)
-					if (x > curChunk.x - volumeRenderDistance && x < curChunk.x + volumeRenderDistance &&
-						z > curChunk.z - volumeRenderDistance && z < curChunk.z + volumeRenderDistance)
-					{ treeChunks.push_back(glm::ivec3(x, y, z)); }
+					// load unloaded chunk near range, using perlin
+					initNoiseChunk(x, y, z);
+					// let's just try tree creation each chunk for now, why not
+					treeChunks.push_back(glm::ivec3(x, y, z));
 				}
+				else { loadTreeVoxelsForChunk(x, y, z); }
 			}
 		}
 	}
@@ -5680,16 +6136,87 @@ void loadNewChunks()
 			if (airFound) { setTree(treeStart.x, treeStart.y, treeStart.z); }
 		}
 	}
+}
 
-	// draw dungeon borders
-	for (auto& dungeon : dungeons) { dungeon->drawBorder(); }
+void loadPortalChunks(Portal* portal)
+{
+	const glm::ivec3& basePos = portal->getPosition();
+	glm::ivec3 chunkPos = getVoxelChunkPos(basePos);
+	// current noise algo usage would generate max 3 chunk height noise
+	initNoiseChunk(chunkPos.x, 0, chunkPos.z);
+	initNoiseChunk(chunkPos.x, 1, chunkPos.z);
+	initNoiseChunk(chunkPos.x, 2, chunkPos.z);
+	// auto adjust portal height (maybe a portal setting to toggle in the future?)
+	portal->setPosition(glm::ivec3(basePos.x, getHighestVoxelAt(basePos.x, basePos.z) + 1, basePos.z));
+}
+
+void loadTown(const glm::ivec3& pos, const glm::ivec3& trainingGroundOffset, const std::string& name)
+{
+	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(pos.x, pos.z)));
+	addPortal(pos.x + 1024 - 20, 0, pos.z + 1024 - 20, name + " Portal");
+
+	if (!(trainingGroundOffset.x == 0 && trainingGroundOffset.y == 0 && trainingGroundOffset.z == 0))
+	{
+		addPortal(pos.x + (trainingGroundOffset.x * 1024) + 20, pos.y + (trainingGroundOffset.y * 1024), pos.z + (trainingGroundOffset.z * 1024) + 20, name + " Training Ground Portal");
+	}
 }
 
 void loadGameMap()
 {
-	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(-1024, -1024)));
+	// load base towns
+	loadTown(glm::ivec3(-1024, 0, -1024), glm::ivec3(), "Starting Town");
+	loadTown(glm::ivec3(-2048, 0, -2048), glm::ivec3(1, 0, 0), "Town 1");
+	loadTown(glm::ivec3(    0, 0, -2048), glm::ivec3(0, 0, 1), "Town 2");
+	loadTown(glm::ivec3(-1024, 0,     0), glm::ivec3(-1, 0, 0), "Town 3");
+	loadTown(glm::ivec3(-2048, 0,     0), glm::ivec3(0, 0, -1), "Town 4");
+
+	// load portal heights
+	for (auto& portal : portals) { loadPortalChunks(portal.get()); }
+
+	// load surrounding chunks (before adjusting player y)
 	loadNewChunks();
-	while (getVoxel(getPlayerPositionVoxelPos()).a != 0) { cy++; }
+
+	// move player nicely to the proper height
+	glm::ivec3 pvox(getPlayerPositionVoxelPos());
+	cy = (float)(getHighestVoxelAt(pvox.x, pvox.z) + 1);
+
+	// add land ownership start boundary
+	VisibleRegionBorder* landOwnershipBorder = new VisibleRegionBorder(glm::vec3(-2048, 0, -2048), glm::vec3(3072, 0, 3072));
+	landOwnershipBorder->setColor(0.0f, 0.8f, 0.0f, 0.5f);
+	addVisibleRegionBorder(landOwnershipBorder);
+	// add wilderness start boundary
+	VisibleRegionBorder* wildernessBorder = new VisibleRegionBorder(glm::vec3(-10240, 0, -10240), glm::vec3(20480, 0, 20480));
+	wildernessBorder->setColor(0.8f, 0.0f, 0.0f, 0.5f);
+	addVisibleRegionBorder(wildernessBorder);
+}
+
+void updateDungeons()
+{
+	// check for dungeon entry/completion
+	if (!activeDungeon)
+	{
+		for (auto& dungeon : dungeons)
+		{
+			if (dungeon->isPlayerInside() && dungeon->isActivatable())
+			{
+				activeDungeon = dungeon.get();
+				enablePhysicalBounds(activeDungeon->getWorldBoundingBox());
+				activeDungeon->setActivated(true);
+				currentWave = 1;
+				break;
+			}
+		}
+	}
+	else // this can possibly go in the enemy death listener
+	{
+		if (currentWave == 0)
+		{
+			activeDungeon->setActivated(false);
+			activeDungeon->setActivatable(false);
+			activeDungeon = 0;
+			disablePhysicalBounds();
+		}
+	}
 }
 
 #pragma endregion
@@ -5700,6 +6227,8 @@ void drawGameMap(float elapsed)
 	// Draw ground
 	loadNewChunks();
 	renderChunks();
+	updateDungeons();
+
 	//glColor3f(0.9f, 0.9f, 0.9f);
 	//glBegin(GL_QUADS);
 	//glVertex3f(-200.0f, 0.0f, -200.0f);
@@ -5759,6 +6288,8 @@ void drawGameMap(float elapsed)
 	}
 	for (auto& i : droppedItems) { i.get()->draw(); }
 	for (auto& i : loadedNPCs) { i->draw(); }
+	for (auto& i : portals) { i->draw(); }
+	for (auto& i : visibleRegionBorders) { i->draw(); }
 
 	updateWaveTransition();
 	updatePlayer(elapsed);
@@ -5899,7 +6430,7 @@ void renderScene()
 	updateInformationHistory();
 
 	// draw UI windows
-	for (unsigned int i = 0; i < uiWindows.size(); i++) { uiWindows[i]->onDraw(); }
+	for (auto it = uiWindows.begin(); it != uiWindows.end(); it++) { it->get()->onDraw(); }
 	drawDialogueWindow();
 
 	// process mouse movement for UI windows
@@ -5982,6 +6513,7 @@ void attemptItemPickup()
 #define GLUT_KEY_9 57
 #define GLUT_KEY_SPACEBAR 32
 #define GLUT_KEY_F 102
+#define GLUT_KEY_T 116
 
 void processNormalKeys(unsigned char key, int x, int y)
 {
@@ -6000,6 +6532,7 @@ void processNormalKeys(unsigned char key, int x, int y)
 	case GLUT_KEY_Z: attemptItemPickup(); break;
 	case GLUT_KEY_SPACEBAR: playerJumpRequested = true; break;
 	case GLUT_KEY_F: getUIWindowByTitle("Keybinding")->setVisible(!getUIWindowByTitle("Keybinding")->getVisible()); break;
+	case GLUT_KEY_T: getUIWindowByTitle("World Map")->setVisible(!getUIWindowByTitle("World Map")->getVisible()); break;
 	}
 
 	// auto bind learned skills to number keys 1 - 9
@@ -6178,6 +6711,9 @@ void mouseMove(int x, int y)
 		glm::ivec2 diff = glm::ivec2(x, y) - windowDragOrigin;
 		draggedWindow->setPosition(draggedWindowOriginalPos + diff);
 	}
+
+	// handle ui drag events (TODO: check active window & z-order?)
+	for (auto it = uiWindows.rbegin(); it != uiWindows.rend(); it++) { it->get()->onMouseDrag(x, y); }
 }
 
 void mouseMovePassive(int x, int y)
@@ -6259,6 +6795,8 @@ int main(int argc, char** argv)
 	addUIWindow(new SkillsWindow());
 	addUIWindow(new ShopWindow());
 	addUIWindow(new KeybindingWindow());
+	addUIWindow(new WorldMapWindow());
+	addUIWindow(new FuckYouWindow()); // what the flying fuck the ui system crashes on click of background windows (z-order swap part) if exactly 6 windows are registered
 
 	initKeybindings();
 
@@ -6276,24 +6814,29 @@ int main(int argc, char** argv)
 }
 
 /*
-v1:
+v1 (11/06/2020):
 mob spawns, basic mob movement, dealing damage, NPCs, death, waves, shops, inventory, equipment, skills, NPC dialogues, stat calculations,
 player and mob skills, voxel engine core, player stat regen, maze generation
 
-v2:
+v2 (16/06/2020):
 a* pathfinding on mobs, voxel terrain physics, jumping
 
-v3:
+v3 (18/06/2020):
 3 new skills, inventory system upgrades (icon size increased, icon visuals added, tooltips w/ name and description, item stacking),
 hp and mp pots, volume surface extraction multithreaded, ui system upgrades (window dragging, universal closing, z-ordering),
-terrain generation upgrades (perlin, dungeons, trees)
+terrain generation upgrades (perlin, dungeons, trees), mob pathfinding and configuration loading temporarily disabled
+
+v4 (24/06/2020):
+dungeon exit constraints and wave initialization functional, mob pathfinding fixed and re-enabled, added world map window, added portals
+improved dungeon chunk loading performance, fixed tree generation & applied it globally, added towns & training grounds (basic)
+added land ownership (buildable) and wilderness (pvp + random dungeons) region boundaries (basic)
 
 DONE BUT DISABLED:
 Maple map XML wz foothold and layout voxel mapping with depth expansion and dynamic noise, portals, switching maps, ropes/ladders (render only)
 
 NEXT:
-trader positioning fixed, mob scaling, skill scaling, wave boss,
-equipment window upgrades, skill window icons, bank, crafting, keybinding window, voxel placing & destroying
+land ownership, biomes, equipment window upgrades, equipment stat bonuses, crafting, skill window icons, keybinding window, dropping inventory items, more skills, potion tiers
+trader positioning fixed, mob scaling, skill scaling, wave boss, bank, voxel placing & destroying
 
 TENTATIVE TODO:
 Map biome, noise, and XML wz mapping and depth expansion generation upgrades
