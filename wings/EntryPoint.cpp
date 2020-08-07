@@ -2616,8 +2616,8 @@ void renderStrokeFontString(float x, float y, float z, void* font, const char* s
 float angle = 0.0;
 // actual vector representing the camera's direction
 float lx = 0.0f, lz = -1.0f, ly = 0.0f;
-// XZ position of the camera
-float cx = 0.0f, cz = 5.0f;
+// position of the camera
+float cx = 0.0f, cz = 5.0f, cy = 0.0f;
 // mouse camera movement
 float deltaAngle = 0.0f;
 float deltaAngleY = 0.0f;
@@ -2709,14 +2709,14 @@ struct VolumeChunk
 	}
 };
 
-struct KeyHash
+struct KeyHash_GLMIVec3
 {
 	size_t operator()(const glm::ivec3& k) const
 	{
 		return std::hash<int>()(k.x) ^ std::hash<int>()(k.y) ^ std::hash<int>()(k.z);
 	}
 };
-struct KeyEqual
+struct KeyEqual_GLMIVec3
 {
 	bool operator()(const glm::ivec3& a, const glm::ivec3& b) const
 	{
@@ -2724,7 +2724,7 @@ struct KeyEqual
 	}
 };
 
-std::unordered_map<glm::ivec3, std::unique_ptr<VolumeChunk>, KeyHash, KeyEqual> mChunks;
+std::unordered_map<glm::ivec3, std::unique_ptr<VolumeChunk>, KeyHash_GLMIVec3, KeyEqual_GLMIVec3> mChunks;
 
 VolumeChunk* initChunk(int x, int y, int z)
 {
@@ -2750,6 +2750,19 @@ void setVoxel(int x, int y, int z, unsigned char r, unsigned char g, unsigned ch
 	if (!chunk->mVolume->setVoxelAt(x, y, z, VoxelType(r, g, b, 255))) { printf("Failed to set voxel! (%d, %d, %d)\n", x, y, z); return; }
 	chunk->mMeshNeedsUpdate = true;
 }
+
+const VoxelType& getVoxel(int x, int y, int z)
+{
+	glm::ivec3 chunkPos(std::floorf((float)x / 16.0f), std::floorf((float)y / 16.0f), std::floorf((float)z / 16.0f));
+	VolumeChunk* chunk;
+
+	if (mChunks.count(chunkPos) == 0) { chunk = initChunk(chunkPos.x, chunkPos.y, chunkPos.z); }
+	else { chunk = mChunks[chunkPos].get(); }
+
+	return chunk->mVolume->getVoxelAt(x, y, z);
+}
+
+const VoxelType& getVoxel(const glm::ivec3& pos) { return getVoxel(pos.x, pos.y, pos.z); }
 
 int volumeRenderDistance = 3;
 
@@ -3022,6 +3035,285 @@ int CheckLineBox(glm::vec3 B1, glm::vec3 B2, glm::vec3 L1, glm::vec3 L2, glm::ve
 
 #pragma endregion
 
+#pragma region Pathfinding
+
+struct KeyHash_GLMIVec2
+{
+	size_t operator()(const glm::ivec2& k) const
+	{
+		return std::hash<int>()(k.x) ^ std::hash<int>()(k.y);
+	}
+};
+struct KeyEqual_GLMIVec2
+{
+	bool operator()(const glm::ivec2& a, const glm::ivec2& b) const
+	{
+		return a.x == b.x && a.y == b.y;
+	}
+};
+
+namespace AStar
+{
+	std::vector<glm::ivec2> direction = {
+			{ 0, 1 }, { 1, 0 }, { 0, -1 }, { -1, 0 },
+			{ -1, -1 }, { 1, 1 }, { -1, 1 }, { 1, -1 }
+	};
+
+	using HeuristicFunction = std::function<unsigned int(const glm::ivec2&, const glm::ivec2&)>;
+
+	class Heuristic
+	{
+	private:
+		static glm::ivec2 getDelta(glm::ivec2 source_, glm::ivec2 target_)
+		{
+			return{ abs(source_.x - target_.x),  abs(source_.y - target_.y) };
+		}
+
+	public:
+		static unsigned int manhattan(glm::ivec2 source_, glm::ivec2 target_)
+		{
+			auto delta = std::move(getDelta(source_, target_));
+			return static_cast<unsigned int>(10 * (delta.x + delta.y));
+		}
+
+		static unsigned int euclidean(glm::ivec2 source_, glm::ivec2 target_)
+		{
+			auto delta = std::move(getDelta(source_, target_));
+			return static_cast<unsigned int>(10 * sqrt(pow(delta.x, 2) + pow(delta.y, 2)));
+		}
+
+		static unsigned int octagonal(glm::ivec2 source_, glm::ivec2 target_)
+		{
+			auto delta = std::move(getDelta(source_, target_));
+			return 10 * (delta.x + delta.y) + (-6) * std::min(delta.x, delta.y);
+		}
+	};
+
+	struct Node
+	{
+		glm::ivec2 pos; // The position of the node on the field.
+		Node* cameFrom; // For node n, cameFrom[n] is the node immediately preceding it on the cheapest path from start to n currently known.
+		unsigned int gScore; // For node n, gScore[n] is the cost of the cheapest path from start to n currently known.
+		unsigned int fScore; // For node n, fScore[n] := gScore[n] + h(n). fScore[n] represents our current best guess as to how short a path from start to finish can be if it goes through n.
+
+		Node(const glm::ivec2& _pos) : pos(_pos), gScore(UINT_MAX), fScore(UINT_MAX), cameFrom(0) {}
+		Node(const glm::ivec2& _pos, unsigned int _gScore, unsigned int _fScore) : pos(_pos), gScore(_gScore), fScore(_fScore), cameFrom(0) {}
+	};
+
+	class Pathfinder
+	{
+	private:
+		HeuristicFunction heuristic;
+		unsigned int directions;
+
+		std::unordered_map<glm::ivec2, std::unique_ptr<Node>, KeyHash_GLMIVec2, KeyEqual_GLMIVec2> nodes;
+		// The set of discovered nodes that may need to be (re-)expanded.
+		// Initially, only the start node is known.
+		// This is usually implemented as a min-heap or priority queue rather than a hash-set.
+		std::vector<Node*> openSet;
+
+	public:
+		Pathfinder()
+		{
+			setDiagonalMovement(false);
+			setHeuristic(&Heuristic::manhattan);
+		}
+
+		void setDiagonalMovement(bool enable_)
+		{
+			directions = (enable_ ? 8 : 4);
+		}
+
+		void setHeuristic(HeuristicFunction heuristic_)
+		{
+			heuristic = std::bind(heuristic_, std::placeholders::_1, std::placeholders::_2);
+		}
+
+		// A* finds a path from start to goal.
+		// h is the heuristic function. h(n) estimates the cost to reach goal from node n.
+		std::vector<glm::ivec2> findPath(const glm::ivec2& start, const glm::ivec2& goal, std::function<bool(const glm::ivec2&)> invalid)
+		{
+			openSet.push_back(new Node(start, 0, heuristic(start, goal)));
+			nodes[start].reset(openSet[0]);
+
+			while (!openSet.empty())
+			{
+				// This operation can occur in O(1) time if openSet is a min-heap or a priority queue
+				//current := the node in openSet having the lowest fScore[] value
+				Node* current = openSet[0];
+				for (auto& node : openSet)
+				{
+					if (node->fScore <= current->fScore)
+					{
+						current = node;
+					}
+				}
+
+				if (current->pos == goal)
+				{
+					std::vector<glm::ivec2> ret;
+					while (current->cameFrom != 0)
+					{
+						ret.insert(ret.begin(), current->pos);
+						current = current->cameFrom;
+					}
+					ret.insert(ret.begin(), current->pos);
+					return ret;
+				}
+
+				openSet.erase(std::find(openSet.begin(), openSet.end(), current));
+
+				// iterate through possible neighbors, skipping invalid ones
+				for (unsigned int i = 0; i < directions; i++)
+				{
+					glm::ivec2 newPos(current->pos + direction[i]);
+					if (invalid(newPos)) { continue; }
+					Node* neighbor = nodes[newPos].get();
+					if (neighbor == 0)
+					{
+						neighbor = new Node(newPos);
+						nodes[newPos].reset(neighbor);
+					}
+
+					// d(current, neighbor) is the weight of the edge from current to neighbor
+					// tentative_gScore is the distance from start to the neighbor through current
+					unsigned int tentative_gScore = current->gScore + ((i < 4) ? 10 : 14);
+					if (tentative_gScore < neighbor->gScore)
+					{
+						// This path to neighbor is better than any previous one. Record it!
+						neighbor->cameFrom = current;
+						neighbor->gScore = tentative_gScore;
+						neighbor->fScore = neighbor->gScore + heuristic(neighbor->pos, goal);
+						if (std::find(openSet.begin(), openSet.end(), neighbor) == openSet.end())
+						{
+							openSet.push_back(neighbor);
+						}
+					}
+				}
+			}
+
+			// Open set is empty but goal was never reached
+			return std::vector<glm::ivec2>();
+		}
+	};
+};
+
+#pragma endregion
+
+#pragma region Terrain Generation
+
+bool mazeWalls[57][57][4];
+glm::ivec2 mazeCurPos;
+int mazeMoveLimit = 50;
+std::vector<glm::ivec2> mazeClearedTiles;
+
+namespace MazeWalls
+{
+	enum MazeWall
+	{
+		FORWARD,
+		RIGHT,
+		BACKWARD,
+		LEFT
+	};
+}
+typedef MazeWalls::MazeWall MazeWall;
+
+void mazeInitWalls()
+{
+	for (int w = 0; w < 57; w++)
+	{
+		for (int d = 0; d < 57; d++)
+		{
+			for (int i = 0; i < 4; i++)
+			{
+				mazeWalls[w][d][i] = true;
+			}
+		}
+	}
+}
+
+void mazeRemoveWall(MazeWall dir) { mazeWalls[mazeCurPos.x][mazeCurPos.y][dir] = false; }
+
+bool mazeCanMove(MazeWall dir)
+{
+	return !(dir == MazeWall::FORWARD && mazeCurPos.y + 1 > 56 ||
+		dir == MazeWall::RIGHT && mazeCurPos.x + 1 > 56 ||
+		dir == MazeWall::BACKWARD && mazeCurPos.y - 1 < 0 ||
+		dir == MazeWall::LEFT && mazeCurPos.x - 1 < 0);
+}
+
+void mazeMoveDirection(MazeWall dir)
+{
+	if (dir == MazeWall::FORWARD) { mazeCurPos.y++; }
+	else if (dir == MazeWall::RIGHT) { mazeCurPos.x++; }
+	else if (dir == MazeWall::BACKWARD) { mazeCurPos.y--; }
+	else if (dir == MazeWall::LEFT) { mazeCurPos.x--; }
+}
+
+MazeWall mazeGetInverseWall(MazeWall dir)
+{
+	if (dir == MazeWall::FORWARD) { return MazeWall::BACKWARD; }
+	else if (dir == MazeWall::RIGHT) { return MazeWall::LEFT; }
+	else if (dir == MazeWall::BACKWARD) { return MazeWall::FORWARD; }
+	else if (dir == MazeWall::LEFT) { return MazeWall::RIGHT; }
+}
+
+bool mazeClearPath(MazeWall dir)
+{
+	if (!mazeCanMove(dir)) { return false; }
+
+	mazeRemoveWall(dir);
+	mazeMoveDirection(dir);
+	mazeRemoveWall(mazeGetInverseWall(dir));
+	mazeClearedTiles.push_back(mazeCurPos);
+
+	return true;
+}
+
+void mazeGenerate()
+{
+	mazeInitWalls();
+	for (int curMoves = 0; curMoves < mazeMoveLimit; curMoves++)
+	{
+		MazeWall direction = (MazeWall)randomNumber(0, 3);
+		int len = randomNumber(2, 10);
+
+		for (int i = 0; i < len; i++)
+		{
+			if (!mazeClearPath(direction)) { break; }
+		}
+	}
+}
+
+void generateMazeWallVoxels(int baseX, int baseZ, MazeWall wall)
+{
+	for (int i = 0; i < 7; i++)
+	{
+		setVoxel(
+			baseX + (wall == MazeWall::FORWARD || wall == MazeWall::BACKWARD ? i : 0) + (wall == MazeWall::RIGHT ? 6 : 0),
+			0,
+			baseZ + (wall == MazeWall::LEFT || wall == MazeWall::RIGHT ? i : 0) + (wall == MazeWall::FORWARD ? 6 : 0),
+			randomNumber(0, 15),
+			randomNumber(0, 75),
+			randomNumber(0, 15)
+		);
+	}
+}
+
+bool invalidPathfindNode(const glm::ivec2& node)
+{
+	if (node.x < 0 || node.y < 0 || node.x >= 57 || node.y >= 57) { return true; }
+	if (mazeWalls[node.x][node.y][0] && mazeWalls[node.x][node.y][1] && mazeWalls[node.x][node.y][2] && mazeWalls[node.x][node.y][3]) { return true; }
+	return false;
+}
+
+glm::ivec2 worldToMazePos(const glm::vec3& worldPos) { return glm::ivec2((int)std::floorf((worldPos.x + 200.0f) / 7.0f), (int)std::floorf((worldPos.z + 200.0f) / 7.0f)); }
+
+glm::vec3 mazeToWorldPos(const glm::ivec2& pos) { return glm::vec3(-200 + (pos.x * 7) + 3, 0.0f, -200 + (pos.y * 7) + 3); }
+
+#pragma endregion
+
 #pragma region Combat Engine
 
 class ICombatSkill
@@ -3088,9 +3380,20 @@ void playerGainEXP(int exp)
 long long playerLastMpRegen = 0;
 glm::vec3 playerLastPos;
 float playerSamePosTime = 0;
+float playerTotalTravelDistance = 0;
+
+bool playerJumpRequested = false;
+bool playerJumpProcessing = false;
+float playerJumpTime = 0;
+bool playerOnGround = true;
+float playerFallTime = 0;
+float playerVerticalVelocity = 0.0f;
+
+glm::ivec3 getPlayerPositionVoxelPos() { return glm::ivec3((int)(cx < 0 ? std::ceilf(cx) - 1 : std::floorf(cx)), (int)(cy < 0 ? std::ceilf(cy) - 1 : std::floorf(cy)), (int)(cz < 0 ? std::ceilf(cz) - 1 : std::floorf(cz))); }
 
 void updatePlayer(float elapsed)
 {
+	// apply mp regen
 	if (Tools::currentTimeMillis() - playerLastMpRegen > 10000)
 	{
 		if (playerMP < playerMaxMP) { playerMP = std::min(playerMaxMP, playerMP + 2); }
@@ -3099,6 +3402,7 @@ void updatePlayer(float elapsed)
 
 	glm::vec3 playerCurrentPos(cx, 0.0f, cz);
 
+	// apply hp regen if standing in the same spot for 5 sec at a time
 	if (playerCurrentPos != playerLastPos)
 	{
 		playerLastPos = playerCurrentPos;
@@ -3110,6 +3414,95 @@ void updatePlayer(float elapsed)
 		playerSamePosTime = 0;
 	}
 	else { playerSamePosTime += elapsed; }
+
+	// apply physics based on voxel terrain
+	glm::ivec3 curVoxelPos = getPlayerPositionVoxelPos();
+	const VoxelType& curVoxel = getVoxel(curVoxelPos);
+
+	// process jumping and gravity
+	glm::ivec3 curVoxelUnderPos(curVoxelPos.x, curVoxelPos.y - 1, curVoxelPos.z);
+	const VoxelType& curVoxelUnder = getVoxel(curVoxelUnderPos);
+
+	// check if player is standing on solid ground currently
+	bool playerCurrentlyOnGround = curVoxelUnder.a != 0 && cy == curVoxelPos.y;
+
+	if (playerCurrentlyOnGround != playerOnGround)
+	{
+		playerFallTime = 0;
+		playerOnGround = playerCurrentlyOnGround;
+		if (playerOnGround) { playerVerticalVelocity = 0; }
+	}
+
+	// initiate jumps if on solid ground
+	if (playerJumpRequested)
+	{
+		playerJumpRequested = false;
+		if (playerOnGround)
+		{
+			playerJumpTime = 0;
+			playerJumpProcessing = true;
+		}
+	}
+
+	// process jump acceleration changes
+	if (playerJumpProcessing)
+	{
+		playerJumpTime = std::min(playerJumpTime + (elapsed * 2), 1.0f);
+		float jumpAcceleration = glm::mix(3.5f, 0.0f, playerJumpTime);
+		float frameAcceleration = jumpAcceleration * (elapsed * 2);
+		playerVerticalVelocity = frameAcceleration;
+
+		if (playerJumpTime == 1.0f) { playerJumpProcessing = false; }
+	}
+
+	// apply gravity
+	if (!playerOnGround && !playerJumpProcessing)
+	{
+		playerFallTime += elapsed;
+		float fallAcceleration = std::max(-3.130495f * playerFallTime, -7.280109f) / 333.33f; // use real world acceleration and terminal velocity, 9.8m2 and 53m2
+		playerVerticalVelocity += fallAcceleration;
+	}
+
+	// apply vertical velocity
+	cy += playerVerticalVelocity;
+
+	if (curVoxelUnder.a != 0 && cy < curVoxelPos.y) { cy = (float)curVoxelPos.y; }
+
+	// temporarily do hard camera movement here, so we can apply physics & stats easily
+	updateCamera(elapsed);
+
+	glm::ivec3 newVoxelPos = getPlayerPositionVoxelPos();
+	const VoxelType& newVoxel = getVoxel(newVoxelPos);
+
+	// DEBUG: draw player position voxel
+	glPushMatrix();
+	glTranslatef((float)newVoxelPos.x, (float)newVoxelPos.y, (float)newVoxelPos.z);
+	glTranslatef(0.5f, 0.5f, 0.5f);
+	glColor3f(0.5f, 0.5f, 0.5f);
+	glutWireCube(1.0f);
+	glPopMatrix();
+
+	if (newVoxelPos != curVoxelPos)
+	{
+		//printf("=== CHANGED VOXELS!! ===\n");
+		//printf("old: %d, %d, %d | new: %d, %d, %d\n", curVoxelPos.x, curVoxelPos.y, curVoxelPos.z, newVoxelPos.x, newVoxelPos.y, newVoxelPos.z);
+		if (newVoxel.a != 0) // isn't air voxel
+		{
+			glm::vec3 oldLower((float)curVoxelPos.x + 0.0001f, (float)curVoxelPos.y + 0.0001f, (float)curVoxelPos.z + 0.0001f);
+			glm::vec3 oldHigher(oldLower.x + 0.9998f, oldLower.y + 0.9998f, oldLower.z + 0.9998f);
+
+			//printf("=== VOXEL COLLISION!! ===\n");
+			//printf("old bounds: %f, %f, %f to %f, %f, %f\n", oldLower.x, oldLower.y, oldLower.z, oldHigher.x, oldHigher.y, oldHigher.z);
+
+			if (cx < oldLower.x && getVoxel(newVoxelPos.x, 0, curVoxelPos.z).a != 0) { cx = oldLower.x; }
+			if (cx > oldHigher.x && getVoxel(newVoxelPos.x, 0, curVoxelPos.z).a != 0) { cx = oldHigher.x; }
+			if (cz < oldLower.z && getVoxel(curVoxelPos.x, 0, newVoxelPos.z).a != 0) { cz = oldLower.z; }
+			if (cz > oldHigher.z && getVoxel(curVoxelPos.x, 0, newVoxelPos.z).a != 0) { cz = oldHigher.z; }
+		}
+	}
+
+	// update statistics
+	playerTotalTravelDistance += glm::distance(glm::vec3(cx, 0.0f, cz), playerCurrentPos);
 }
 
 std::vector<int> playerInventoryItems;
@@ -3195,7 +3588,11 @@ private:
 	glm::vec3 mPosition;
 	
 	glm::vec3 mMoveDirection;
-	long long mLastMoveDirectionCalcTime = 0;
+	std::vector<glm::ivec2> mPathfindPath;
+	long long mLastPathfindCalcTime = 0;
+	std::vector<glm::ivec2> mLatestPathfindPath;
+	bool mNewerPathfindAvailable = false;
+	bool mCurrentlyPathfinding = false;
 
 	int mHP = 5;
 	int mMaxHP = 5;
@@ -3204,19 +3601,70 @@ private:
 
 	long long mLastAttackTime = 0;
 
+	static void calculateMovementPath(Enemy* enemy, const glm::ivec2& startPos, const glm::ivec2& targetPos)
+	{
+		enemy->mCurrentlyPathfinding = true;
+		AStar::Pathfinder pathfinder;
+		enemy->mLatestPathfindPath = pathfinder.findPath(startPos, targetPos, invalidPathfindNode);
+		enemy->mNewerPathfindAvailable = true;
+		enemy->mCurrentlyPathfinding = false;
+	}
+
 public:
 	Enemy(const glm::vec3& pos) : mPosition(pos) {}
 
 	void update(float elapsed)
 	{
+		glm::vec3 playerPos(cx, 0.0f, cz);
+		float distToPlayer = glm::distance(mPosition, playerPos);
+
 		// update pathfinding
-		if (Tools::currentTimeMillis() - mLastMoveDirectionCalcTime > 1000)
+		if (distToPlayer > 7.0f)
 		{
-			mMoveDirection = glm::vec3(cx, 0.0f, cz) - mPosition;
-			mMoveDirection = glm::normalize(mMoveDirection);
+			// swap latest calculated pathfind path in
+			if (mNewerPathfindAvailable)
+			{
+				mPathfindPath = mLatestPathfindPath;
+				mNewerPathfindAvailable = false;
+			}
+
+			// determine if path should be recalculated
+			if (!mCurrentlyPathfinding && Tools::currentTimeMillis() - mLastPathfindCalcTime > 3000)
+			{
+				mLastPathfindCalcTime = Tools::currentTimeMillis();
+
+				glm::ivec2 startPos(worldToMazePos(mPosition));
+				glm::ivec2 targetPos(worldToMazePos(playerPos));
+				if (!invalidPathfindNode(startPos) && !invalidPathfindNode(targetPos)) // invalid endpoints crash
+				{
+					std::thread t(std::bind(calculateMovementPath, this, startPos, targetPos));
+					t.detach();
+				}
+			}
+		}
+		else
+		{
+			mPathfindPath.clear();
 		}
 
-		float distToPlayer = glm::distance(mPosition, glm::vec3(cx, 0.0f, cz));
+		// recalculate movement direction
+		if (mPathfindPath.size() > 1)
+		{
+			if (glm::distance(mPosition, mazeToWorldPos(mPathfindPath[0])) < 0.5f) { mPathfindPath.erase(mPathfindPath.begin()); }
+
+			mMoveDirection = mazeToWorldPos(mPathfindPath[0]) - mPosition;
+			mMoveDirection = glm::normalize(mMoveDirection);
+		}
+		else if (distToPlayer <= 7.0f)
+		{
+			mMoveDirection = playerPos - mPosition;
+			mMoveDirection = glm::normalize(mMoveDirection);
+		}
+		else
+		{
+			mMoveDirection.x = 0;
+			mMoveDirection.z = 0;
+		}
 
 		// move towards player
 		if (distToPlayer >= 2.5f) { mPosition += mMoveDirection * elapsed * mMoveSpeed; }
@@ -3804,6 +4252,82 @@ public:
 	virtual void attemptCast() { shootRaycaster(2); }
 };
 
+class ChargeDash : public ISkillEffect
+{
+private:
+	glm::vec3 mStartPoint;
+	glm::vec3 mEndPoint;
+	float mTimeDisplayed = 0.0f;
+
+public:
+	ChargeDash() {}
+
+	virtual void update(float elapsed)
+	{
+		mTimeDisplayed += elapsed;
+		mStartPoint.x = cx;
+		mStartPoint.z = cz;
+		moveCamera(1, elapsed * 30.0f);
+		mEndPoint.x = cx;
+		mEndPoint.z = cz;
+	}
+
+	virtual void draw()
+	{
+		// calculate ray alpha based on elapsed time
+		float alpha = mTimeDisplayed * 2;
+		if (mTimeDisplayed > 0.5f && mTimeDisplayed <= 1.0f) { alpha = 1; }
+		else if (mTimeDisplayed > 1.0f) { alpha = glm::mix(1.0f, 0.0f, mTimeDisplayed - 1.0f); }
+		alpha = std::max(alpha, 0.0f);
+
+		// draw ray
+		glLineWidth(10.0f);
+		glColor4f(BYTE_TO_FLOAT_COLOR(146), BYTE_TO_FLOAT_COLOR(144), BYTE_TO_FLOAT_COLOR(56), alpha);
+		glBegin(GL_LINES);
+		glVertex3f(mStartPoint.x, mStartPoint.y, mStartPoint.z);
+		glVertex3f(mEndPoint.x, mEndPoint.y, mEndPoint.z);
+		glEnd();
+		glLineWidth(1.0f);
+	}
+
+	virtual bool completed() { return mTimeDisplayed >= 1.0f; }
+};
+
+void startChargeDash(int mode)
+{
+	// validate
+	if (playerMP < mode) { printf("Not enough MP to charge dash at mode %d!\n", mode); return; }
+
+	printf("Charge dash started at (%s) (mode %d)\n", to_string(glm::vec3(cx, cy, cz)).c_str(), mode);
+	playerMP -= mode;
+
+	skillEffects.push_back(std::unique_ptr<ISkillEffect>(new ChargeDash()));
+}
+
+class ChargeDashBasicSkill : public ICombatSkill
+{
+public:
+	ChargeDashBasicSkill() : ICombatSkill(4, "Charge Dash (Basic)") {}
+
+	virtual void attemptCast() { startChargeDash(1); }
+};
+
+class ChargeDashRushSkill : public ICombatSkill
+{
+public:
+	ChargeDashRushSkill() : ICombatSkill(5, "Charge Dash (Rush)") {}
+
+	virtual void attemptCast() { startChargeDash(2); }
+};
+
+class ChargeDashSweepSkill : public ICombatSkill
+{
+public:
+	ChargeDashSweepSkill() : ICombatSkill(6, "Charge Dash (Sweep)") {}
+
+	virtual void attemptCast() { startChargeDash(3); }
+};
+
 #pragma endregion
 
 #pragma region NPC Interface
@@ -3933,6 +4457,9 @@ void loadConfig()
 		playerInventoryItems.push_back(1);
 		playerInventoryItems.push_back(2);
 		playerInventoryItems.push_back(3);
+		playerInventoryItems.push_back(4);
+		playerInventoryItems.push_back(5);
+		playerInventoryItems.push_back(6);
 
 		return;
 	}
@@ -4006,6 +4533,7 @@ void saveConfig()
 
 	// statistics
 	cfg.setInt("Statistics", "deaths", playerDeaths);
+	cfg.setFloat("Statistics", "totalTravelDistance", playerTotalTravelDistance);
 
 	// save to file
 	cfg.save("settings.ini");
@@ -4167,43 +4695,60 @@ std::unique_ptr<ICombatEntityListener> enemyDropItemListener;
 
 #pragma endregion
 
-#pragma region Terrain Builder
+#pragma region Map Loading
 
-std::vector<float> terrainPositionBuffer;
-std::vector<float> terrainColorBuffer;
-int terrainVertexCount = 0;
-
-void terrainColor(float r, float g, float b)
+void loadGameMap()
 {
-	for (int i = 0; i < 4; i++)
+	// base terrain floor and edges
+	for (int x = -200; x < 199; x++)
 	{
-		terrainColorBuffer.push_back(r);
-		terrainColorBuffer.push_back(g);
-		terrainColorBuffer.push_back(b);
-	}
-}
-
-void terrainVertex(float x, float y, float z)
-{
-	terrainPositionBuffer.push_back(x);
-	terrainPositionBuffer.push_back(y);
-	terrainPositionBuffer.push_back(z);
-	terrainVertexCount++;
-}
-
-void generateTerrainBuffer()
-{
-	for (int x = -200; x < 200; x++)
-	{
-		for (int z = -200; z < 200; z++)
+		for (int z = -200; z < 199; z++)
 		{
-			terrainColor(BYTE_TO_FLOAT_COLOR(randomNumber(0, 30)), BYTE_TO_FLOAT_COLOR(randomNumber(100, 255)), BYTE_TO_FLOAT_COLOR(randomNumber(0, 30)));
-			terrainVertex((float)x, 0.0f, (float)z);
-			terrainVertex((float)x, 0.0f, (float)z + 1);
-			terrainVertex((float)x + 1, 0.0f, (float)z + 1);
-			terrainVertex((float)x + 1, 0.0f, (float)z);
+			setVoxel(x, -1, z, randomNumber(0, 30), randomNumber(100, 255), randomNumber(0, 30));
+			//if (x == -200 || x == 200 || z == -200 || z == 200) { setVoxel(x, 0, z, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15)); }
 		}
 	}
+
+	// generate and apply pathing
+	mazeCurPos = glm::ivec2(randomNumber(0, 56), randomNumber(0, 56));
+	mazeClearedTiles.push_back(mazeCurPos);
+	cx = -200 + (mazeCurPos.x * 7) + 4;
+	cz = -200 + (mazeCurPos.y * 7) + 4;
+	mazeGenerate();
+
+	for (int x = 0; x < 57; x++)
+	{
+		for (int z = 0; z < 57; z++)
+		{
+			int baseX = -200 + (x * 7);
+			int baseZ = -200 + (z * 7);
+
+			// place walls on voxel terrain for each walled off direction of the cell
+			for (int wall = 0; wall < 4; wall++) { if (mazeWalls[x][z][wall]) { generateMazeWallVoxels(baseX, baseZ, (MazeWall)wall); } }
+
+			// fill in the center of completely walled off cells
+			if (mazeWalls[x][z][0] && mazeWalls[x][z][1] && mazeWalls[x][z][2] && mazeWalls[x][z][3])
+			{
+				for (int xx = 0; xx < 5; xx++)
+				{
+					for (int zz = 0; zz < 5; zz++)
+					{
+						setVoxel(baseX + 1 + xx, 0, baseZ + 1 + zz, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15));
+					}
+				}
+			}
+		}
+	}
+
+	// load spawnpoints
+	for (int i = 0; i < 10; i++)
+	{
+		glm::ivec2 pos = mazeClearedTiles[randomNumber(3, mazeClearedTiles.size() - 1)];
+		spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(-200 + (pos.x * 7) + 3, 0.0f, -200 + (pos.y * 7) + 3))));
+	}
+
+	// add wave enter npc
+	loadNPC(2, glm::vec3(cx - 3, 0, cz - 3));
 }
 
 #pragma endregion
@@ -4300,9 +4845,9 @@ void renderScene()
 	glPushMatrix();
 
 	// update camera view
-	updateCamera(elapsedFrameTime);
-	gluLookAt(cx, 5.0f, cz,
-		cx + lx, 5.0f + ly, cz + lz,
+	//updateCamera(elapsedFrameTime);
+	gluLookAt(cx, 1.5f + cy, cz,
+		cx + lx, 1.5f + cy + ly, cz + lz,
 		0.0f, 1.0f, 0.0f);
 
 	// draw all 3d game modules
@@ -4376,7 +4921,7 @@ void renderScene()
 	}
 
 	renderSpacedBitmapString(5, 190, 0, GLUT_BITMAP_HELVETICA_18, ("Active Chunks: " + std::to_string(mChunks.size())).c_str());
-	std::string cpStr = "Camera: (" + to_string(glm::vec3(cx, 0, cz)) + ") -> (" + to_string(glm::vec3(lx, ly, lz)) + ")";
+	std::string cpStr = "Camera: (" + to_string(glm::vec3(cx, cy, cz)) + ") -> (" + to_string(glm::vec3(lx, ly, lz)) + ")";
 	renderSpacedBitmapString(5, 230, 0, GLUT_BITMAP_HELVETICA_18, cpStr.c_str());
 
 	// render stat bars at the bottom
@@ -4488,10 +5033,11 @@ void attemptItemPickup()
 #define GLUT_KEY_7 55
 #define GLUT_KEY_8 56
 #define GLUT_KEY_9 57
+#define GLUT_KEY_SPACEBAR 32
 
 void processNormalKeys(unsigned char key, int x, int y)
 {
-	printf("Normal key: %d\n", key);
+	//printf("Normal key: %d\n", key);
 
 	switch (key)
 	{
@@ -4504,6 +5050,7 @@ void processNormalKeys(unsigned char key, int x, int y)
 	case GLUT_KEY_I: inventoryVisible = !inventoryVisible; break;
 	case GLUT_KEY_R: skillsWindowVisible = !skillsWindowVisible; break;
 	case GLUT_KEY_Z: attemptItemPickup(); break;
+	case GLUT_KEY_SPACEBAR: playerJumpRequested = true; break;
 	}
 
 	// auto bind learned skills to number keys 1 - 9
@@ -4524,7 +5071,7 @@ void processNormalKeys(unsigned char key, int x, int y)
 
 void processNormalKeysUp(unsigned char key, int x, int y) {
 
-	printf("Normal key up: %d\n", key);
+	//printf("Normal key up: %d\n", key);
 
 	switch (key)
 	{
@@ -4632,163 +5179,6 @@ void mouseMovePassive(int x, int y) {
 
 #pragma endregion
 
-#pragma region Terrain Generation
-
-bool mazeWalls[57][57][4];
-glm::ivec2 mazeCurPos;
-int mazeMoveLimit = 50;
-std::vector<glm::ivec2> mazeClearedTiles;
-
-namespace MazeWalls
-{
-	enum MazeWall
-	{
-		FORWARD,
-		RIGHT,
-		BACKWARD,
-		LEFT
-	};
-}
-typedef MazeWalls::MazeWall MazeWall;
-
-void mazeInitWalls()
-{
-	for (int w = 0; w < 57; w++)
-	{
-		for (int d = 0; d < 57; d++)
-		{
-			for (int i = 0; i < 4; i++)
-			{
-				mazeWalls[w][d][i] = true;
-			}
-		}
-	}
-}
-
-void mazeRemoveWall(MazeWall dir) { mazeWalls[mazeCurPos.x][mazeCurPos.y][dir] = false; }
-
-bool mazeCanMove(MazeWall dir)
-{
-	return !(dir == MazeWall::FORWARD && mazeCurPos.y + 1 > 56 ||
-		dir == MazeWall::RIGHT && mazeCurPos.x + 1 > 56 ||
-		dir == MazeWall::BACKWARD && mazeCurPos.y - 1 < 0 ||
-		dir == MazeWall::LEFT && mazeCurPos.x - 1 < 0);
-}
-
-void mazeMoveDirection(MazeWall dir)
-{
-	if (dir == MazeWall::FORWARD) { mazeCurPos.y++; }
-	else if (dir == MazeWall::RIGHT) { mazeCurPos.x++; }
-	else if (dir == MazeWall::BACKWARD) { mazeCurPos.y--; }
-	else if (dir == MazeWall::LEFT) { mazeCurPos.x--; }
-}
-
-MazeWall mazeGetInverseWall(MazeWall dir)
-{
-	if (dir == MazeWall::FORWARD) { return MazeWall::BACKWARD; }
-	else if (dir == MazeWall::RIGHT) { return MazeWall::LEFT; }
-	else if (dir == MazeWall::BACKWARD) { return MazeWall::FORWARD; }
-	else if (dir == MazeWall::LEFT) { return MazeWall::RIGHT; }
-}
-
-bool mazeClearPath(MazeWall dir)
-{
-	if (!mazeCanMove(dir)) { return false; }
-
-	mazeRemoveWall(dir);
-	mazeMoveDirection(dir);
-	mazeRemoveWall(mazeGetInverseWall(dir));
-	mazeClearedTiles.push_back(mazeCurPos);
-
-	return true;
-}
-
-void mazeGenerate()
-{
-	mazeInitWalls();
-	for (int curMoves = 0; curMoves < mazeMoveLimit; curMoves++)
-	{
-		MazeWall direction = (MazeWall)randomNumber(0, 3);
-		int len = randomNumber(2, 10);
-
-		for (int i = 0; i < len; i++)
-		{
-			if (!mazeClearPath(direction)) { break; }
-		}
-	}
-}
-
-void generateMazeWallVoxels(int baseX, int baseZ, MazeWall wall)
-{
-	for (int i = 0; i < 7; i++)
-	{
-		setVoxel(
-			baseX + (wall == MazeWall::FORWARD || wall == MazeWall::BACKWARD ? i : 0) + (wall == MazeWall::RIGHT ? 6 : 0),
-			0,
-			baseZ + (wall == MazeWall::LEFT || wall == MazeWall::RIGHT ? i : 0) + (wall == MazeWall::FORWARD ? 6 : 0),
-			randomNumber(0, 15),
-			randomNumber(0, 75),
-			randomNumber(0, 15)
-		);
-	}
-}
-
-void loadGameMap()
-{
-	// base terrain floor and edges
-	for (int x = -200; x < 199; x++)
-	{
-		for (int z = -200; z < 199; z++)
-		{
-			setVoxel(x, -1, z, randomNumber(0, 30), randomNumber(100, 255), randomNumber(0, 30));
-			//if (x == -200 || x == 200 || z == -200 || z == 200) { setVoxel(x, 0, z, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15)); }
-		}
-	}
-
-	// generate and apply pathing
-	mazeCurPos = glm::ivec2(randomNumber(0, 56), randomNumber(0, 56));
-	mazeClearedTiles.push_back(mazeCurPos);
-	cx = -200 + (mazeCurPos.x * 7) + 4;
-	cz = -200 + (mazeCurPos.y * 7) + 4;
-	mazeGenerate();
-
-	for (int x = 0; x < 57; x++)
-	{
-		for (int z = 0; z < 57; z++)
-		{
-			int baseX = -200 + (x * 7);
-			int baseZ = -200 + (z * 7);
-
-			// place walls on voxel terrain for each walled off direction of the cell
-			for (int wall = 0; wall < 4; wall++) { if (mazeWalls[x][z][wall]) { generateMazeWallVoxels(baseX, baseZ, (MazeWall)wall); } }
-
-			// fill in the center of completely walled off cells
-			if (mazeWalls[x][z][0] && mazeWalls[x][z][1] && mazeWalls[x][z][2] && mazeWalls[x][z][3])
-			{
-				for (int xx = 0; xx < 5; xx++)
-				{
-					for (int zz = 0; zz < 5; zz++)
-					{
-						setVoxel(baseX + 1 + xx, 0, baseZ + 1 + zz, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15));
-					}
-				}
-			}
-		}
-	}
-
-	// load spawnpoints
-	for (int i = 0; i < 10; i++)
-	{
-		glm::ivec2 pos = mazeClearedTiles[randomNumber(3, mazeClearedTiles.size() - 1)];
-		spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(-200 + (pos.x * 7) + 3, 0.0f, -200 + (pos.y * 7) + 3))));
-	}
-
-	// add wave enter npc
-	loadNPC(2, glm::vec3(cx - 3, 0, cz - 3));
-}
-
-#pragma endregion
-
 int main(int argc, char** argv)
 {
 	// init GLUT and create Window
@@ -4835,6 +5225,9 @@ int main(int argc, char** argv)
 	loadedSkills[1].reset(new RaycasterBasicAttackSkill());
 	loadedSkills[2].reset(new RaycasterPowerShotSkill());
 	loadedSkills[3].reset(new RaycasterBlastShotSkill());
+	loadedSkills[4].reset(new ChargeDashBasicSkill());
+	loadedSkills[5].reset(new ChargeDashRushSkill());
+	loadedSkills[6].reset(new ChargeDashSweepSkill());
 
 	// register npcs
 	registerNPC(1, new TraderNPC());
@@ -4854,15 +5247,18 @@ int main(int argc, char** argv)
 }
 
 /*
-WORKING:
+v1:
 mob spawns, basic mob movement, dealing damage, NPCs, death, waves, shops, inventory, equipment, skills, NPC dialogues, stat calculations,
 player and mob skills, voxel engine core, player stat regen, maze generation
+
+v2:
+a* pathfinding on mobs, voxel terrain physics, jumping
 
 DONE BUT DISABLED:
 Maple map XML wz foothold and layout voxel mapping with depth expansion and dynamic noise, portals, switching maps, ropes/ladders (render only)
 
 NEXT:
-a* pathfinding on mobs, simple voxel terrain physics, jumping
+3 new skills, inventory upgrades, hp and mp pots, keybinding window
 
 TENTATIVE TODO:
 Map biome, noise, and XML wz mapping and depth expansion generation upgrades
