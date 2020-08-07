@@ -94,20 +94,30 @@ public:
 class AxisAlignedBoundingBox
 {
 private:
-	glm::vec3 mLower;
-	glm::vec3 mHigher;
+	glm::vec3 mLowerCorner;
+	glm::vec3 mUpperCorner;
 
 public:
-	AxisAlignedBoundingBox(const glm::vec3& lower, const glm::vec3& higher) : mLower(lower), mHigher(higher) {}
+	AxisAlignedBoundingBox(const glm::vec3& lower, const glm::vec3& higher) : mLowerCorner(lower), mUpperCorner(higher) {}
 
-	const glm::vec3& getLowerBound() const { return mLower; }
-	const glm::vec3& getHigherBound() const { return mHigher; }
+	const glm::vec3& getLowerBound() const { return mLowerCorner; }
+	const glm::vec3& getHigherBound() const { return mUpperCorner; }
 
 	bool intersects(const AxisAlignedBoundingBox& b)
 	{
-		return (mLower.x <= b.mHigher.x && mHigher.x >= b.mLower.x) &&
-			(mLower.y <= b.mHigher.y && mHigher.y >= b.mLower.y) &&
-			(mLower.z <= b.mHigher.z && mHigher.z >= b.mLower.z);
+		return (mLowerCorner.x <= b.mUpperCorner.x && mUpperCorner.x >= b.mLowerCorner.x) &&
+			(mLowerCorner.y <= b.mUpperCorner.y && mUpperCorner.y >= b.mLowerCorner.y) &&
+			(mLowerCorner.z <= b.mUpperCorner.z && mUpperCorner.z >= b.mLowerCorner.z);
+	}
+
+	const bool containsPoint(const glm::vec3& pos) const
+	{
+		return (pos.x <= mUpperCorner.x) // - boundary
+			&& (pos.y <= mUpperCorner.y) // - boundary
+			&& (pos.z <= mUpperCorner.z) // - boundary
+			&& (pos.x >= mLowerCorner.x) // + boundary
+			&& (pos.y >= mLowerCorner.y) // + boundary
+			&& (pos.z >= mLowerCorner.z); // + boundary
 	}
 };
 
@@ -133,6 +143,8 @@ public:
 	bool operator == (int i) { return getTotal() == i; }
 
 	const glm::vec3 toVertexColor() const { return glm::vec3(BYTE_TO_FLOAT_COLOR(r), BYTE_TO_FLOAT_COLOR(g), BYTE_TO_FLOAT_COLOR(b)); }
+
+	const bool isAir() const { return a == 0; }
 
 private:
 	unsigned short getTotal() { return r + g + b + a; }
@@ -432,15 +444,13 @@ RaycastResult raycastWithEndpoints(VoxelVolume* volData, const glm::vec3& v3dSta
 {
 	typename VolumeSampler sampler(volData);
 
-	//The doRaycast function is assuming that it is iterating over the areas defined between
-	//voxels. We actually want to define the areas as being centered on voxels (as this is
-	//what the CubicSurfaceExtractor generates). We add 0.5 here to adjust for this.
-	float x1 = v3dStart.x + 0.5f;
-	float y1 = v3dStart.y + 0.5f;
-	float z1 = v3dStart.z + 0.5f;
-	float x2 = v3dEnd.x + 0.5f;
-	float y2 = v3dEnd.y + 0.5f;
-	float z2 = v3dEnd.z + 0.5f;
+	// The doRaycast function is assuming that it is iterating over the areas defined between voxels.
+	float x1 = v3dStart.x;
+	float y1 = v3dStart.y;
+	float z1 = v3dStart.z;
+	float x2 = v3dEnd.x;
+	float y2 = v3dEnd.y;
+	float z2 = v3dEnd.z;
 
 	int i = (int)floorf(x1);
 	int j = (int)floorf(y1);
@@ -2823,7 +2833,7 @@ VolumeChunk* initChunk(int x, int y, int z)
 	return chunk;
 }
 
-void setVoxel(int x, int y, int z, unsigned char r, unsigned char g, unsigned char b)
+void setVoxel(int x, int y, int z, unsigned char r, unsigned char g, unsigned char b, unsigned char a)
 {
 	glm::ivec3 chunkPos(std::floorf((float)x / 16.0f), std::floorf((float)y / 16.0f), std::floorf((float)z / 16.0f));
 	VolumeChunk* chunk;
@@ -2831,7 +2841,7 @@ void setVoxel(int x, int y, int z, unsigned char r, unsigned char g, unsigned ch
 	if (mChunks.count(chunkPos) == 0) { chunk = initChunk(chunkPos.x, chunkPos.y, chunkPos.z); }
 	else { chunk = mChunks[chunkPos].get(); }
 
-	VoxelType vtype(r, g, b, 255);
+	VoxelType vtype(r, g, b, a);
 	if (!chunk->mVolume->setVoxelAt(x, y, z, vtype)) { printf("Failed to set voxel! (%d, %d, %d)\n", x, y, z); return; }
 	chunk->mMeshNeedsUpdate = true;
 
@@ -2843,6 +2853,8 @@ void setVoxel(int x, int y, int z, unsigned char r, unsigned char g, unsigned ch
 
 	mini->setColorAt(x, y, z, vtype);
 }
+
+void setVoxel(int x, int y, int z, unsigned char r, unsigned char g, unsigned char b) { setVoxel(x, y, z, r, g, b, 255); }
 
 const VoxelType& getVoxel(int x, int y, int z)
 {
@@ -2912,7 +2924,6 @@ void renderChunks()
 			{
 				activeSurfaceExtractionThreads++;
 				chunk->mUpdatingMesh = true;
-				chunk->mMesh.reset();
 				std::thread t(chunkSurfaceExtractProc, chunk);
 				t.detach();
 			}
@@ -2931,6 +2942,8 @@ void renderChunks()
 glm::ivec3 getVoxelChunkPos(int x, int y, int z) { return glm::ivec3(std::floorf((float)x / 16.0f), std::floorf((float)y / 16.0f), std::floorf((float)z / 16.0f)); }
 
 glm::ivec3 getVoxelChunkPos(const glm::ivec3& pos) { return getVoxelChunkPos(pos.x, pos.y, pos.z); }
+
+glm::vec3 chunkToWorldPos(const glm::ivec3& pos) { return glm::vec3(pos.x * 16, pos.y * 16, pos.z * 16); }
 
 #pragma endregion
 
@@ -3603,6 +3616,7 @@ enum class InventoryType
 	SETUP,
 	ETC,
 	CASH,
+	BANK,
 	EQUIPPED = -1
 };
 
@@ -3671,6 +3685,17 @@ private:
 
 	void removeSlot(short slot) { mItems.erase(slot); }
 
+	void swap(Item* source, Item* target)
+	{
+		mItems[source->getPosition()].release();
+		mItems[target->getPosition()].release();
+		short swapPos = source->getPosition();
+		source->setPosition(target->getPosition());
+		target->setPosition(swapPos);
+		mItems[source->getPosition()].reset(source);
+		mItems[target->getPosition()].reset(target);
+	}
+
 public:
 	Inventory(InventoryType type, short slotLimit) : mType(type), mSlotLimit(slotLimit) {}
 
@@ -3730,10 +3755,62 @@ public:
 		}
 		return 0;
 	}
+
+	void move(short src, short dest, short slotMax)
+	{
+		Item* source = getItem(src);
+		Item* target = getItem(dest);
+
+		if (!source) { return; } // uhhh in case
+
+		// blank target is really easy
+		if (!target)
+		{
+			mItems[src].release();
+			removeSlot(src);
+			source->setPosition(dest);
+			mItems[dest].reset(source);
+		}
+		// equips don't stack
+		else if (mType == InventoryType::EQUIP) { swap(source, target); }
+		// handle stacking changes of the same item properly
+		else if (target->getItemId() == source->getItemId())
+		{
+			if (source->getQuantity() + target->getQuantity() > slotMax)
+			{
+				short rest = (source->getQuantity() + target->getQuantity()) - slotMax;
+				source->setQuantity(rest);
+				target->setQuantity(slotMax);
+			}
+			else
+			{
+				target->setQuantity(source->getQuantity() + target->getQuantity());
+				removeSlot(src);
+			}
+		}
+		// everything else is a regular swap for sure
+		else { swap(source, target); }
+	}
+
+	// should only be used for dropping items or switching them between inventories. otherwise, use removeSlot to prevent memory leaks
+	Item* releaseSlot(short slot)
+	{
+		Item* ret = mItems[slot].release();
+		removeSlot(slot);
+		return ret;
+	}
+
+	// should only be used when moving items from a different inventory to a specifically pre-checked slot. will override/destroy existing items in a slot
+	void setSlot(short slot, Item* item)
+	{
+		mItems[slot].reset(item);
+		item->setPosition(slot);
+	}
 };
 
 Inventory playerInventoryItems(InventoryType::EQUIP, 36);
 std::vector<int> playerEquipmentItems;
+Inventory playerBankItems(InventoryType::BANK, 15);
 
 #pragma endregion
 
@@ -4383,6 +4460,24 @@ UIWindow* getUIWindowByTitle(const std::string& title)
 
 #pragma endregion
 
+Item* clickSelectedItem = 0;
+Inventory* clickSelectedItemInventory = 0;
+
+void updateClickSelectedItem()
+{
+	if (clickSelectedItem)
+	{
+		ItemInfo* info = getItemInfo(clickSelectedItem->getItemId());
+		if (info)
+		{
+			glPushMatrix();
+			glTranslatef((float)currentMousePos.x + 5, (float)currentMousePos.y + 5, 0);
+			info->drawIcon();
+			glPopMatrix();
+		}
+	}
+}
+
 class InventoryWindow : public UIWindow
 {
 protected:
@@ -4442,8 +4537,32 @@ protected:
 				addInformationHistory("Click on inventory slot " + std::to_string(slot));
 
 				Item* item = playerInventoryItems.getItem(slot);
-				if (item)
+				if (!clickSelectedItem && item)
 				{
+					clickSelectedItem = item;
+					clickSelectedItemInventory = &playerInventoryItems;
+				}
+				// handle transferring between inventories
+				else if (clickSelectedItem && clickSelectedItemInventory != &playerInventoryItems)
+				{
+					// do nothing if the target isn't an empty slot
+					if (!item)
+					{
+						Item* source = clickSelectedItemInventory->releaseSlot(clickSelectedItem->getPosition());
+						playerInventoryItems.setSlot(slot, source);
+						clickSelectedItem = 0;
+					}
+				}
+				// handle slot swaps
+				else if (clickSelectedItem && slot != clickSelectedItem->getPosition())
+				{
+					playerInventoryItems.move(clickSelectedItem->getPosition(), slot, 1);
+					clickSelectedItem = 0;
+				}
+				// handle double clicks
+				else
+				{
+					clickSelectedItem = 0;
 					InventoryType type = item->getInventoryType();
 
 					if (type == InventoryType::EQUIP)
@@ -4928,6 +5047,139 @@ public:
 	FuckYouWindow() : UIWindow(glm::ivec2(95, 95), glm::ivec2(330, 345), "Fuck You") {}
 };
 
+class BankWindow : public UIWindow
+{
+protected:
+	virtual void draw()
+	{
+		for (short i = 0; i < playerBankItems.getSlotLimit(); i++)
+		{
+			int row = i / 10;
+			int col = i % 10;
+
+			short slot = i + 1;
+			Item* item = playerBankItems.getItem(slot);
+
+			glColor4f(0.0f, 0.0f, 0.0f, item ? 0.75f : 0.25f);
+			drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
+			if (item)
+			{
+				glColor4f(1.0f, 1.0f, 1.0f, 0.25f);
+				text(5 + (col * 52), 5 + (row * 52) + 13, GLUT_BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
+
+				// show quantity for non-equips
+				if (item->getInventoryType() != InventoryType::EQUIP)
+				{
+					glColor3f(1.0f, 1.0f, 1.0f);
+					std::string quantityStr = std::to_string(item->getQuantity());
+					text(5 + (col * 52) + 45 - getStringWidth(GLUT_BITMAP_HELVETICA_12, quantityStr), 5 + (row * 52) + 45, GLUT_BITMAP_HELVETICA_12, quantityStr);
+				}
+
+				// draw icon if loaded
+				ItemInfo* info = getItemInfo(item->getItemId());
+				if (info)
+				{
+					glPushMatrix();
+					glTranslatef((float)(5 + (col * 52)), (float)(5 + (row * 52)), 0.0f);
+					info->drawIcon();
+					glPopMatrix();
+				}
+			}
+		}
+	}
+
+	virtual void click(int x, int y)
+	{
+		glm::ivec2 curPos(x, y);
+
+		for (short i = 0; i < playerBankItems.getSlotLimit(); i++)
+		{
+			int row = i / 10;
+			int col = i % 10;
+			glm::ivec2 low(5 + (col * 52), 5 + (row * 52));
+			glm::ivec2 high(low.x + 48, low.y + 48);
+
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				short slot = i + 1;
+
+				addInformationHistory("Click on bank slot " + std::to_string(slot));
+
+				Item* item = playerBankItems.getItem(slot);
+				if (!clickSelectedItem && item)
+				{
+					clickSelectedItem = item;
+					clickSelectedItemInventory = &playerBankItems;
+				}
+				// handle transferring between inventories
+				else if (clickSelectedItem && clickSelectedItemInventory != &playerBankItems)
+				{
+					// do nothing if the target isn't an empty slot
+					if (!item)
+					{
+						Item* source = clickSelectedItemInventory->releaseSlot(clickSelectedItem->getPosition());
+						playerBankItems.setSlot(slot, source);
+						clickSelectedItem = 0;
+					}
+				}
+				// handle slot swaps
+				else if (clickSelectedItem && slot != clickSelectedItem->getPosition())
+				{
+					playerBankItems.move(clickSelectedItem->getPosition(), slot, 1);
+					clickSelectedItem = 0;
+				}
+				// handle double clicks
+				else
+				{
+					clickSelectedItem = 0;
+				}
+				break;
+			}
+		}
+	}
+
+	virtual void mouseMove(int x, int y)
+	{
+		glm::ivec2 curPos(x, y);
+
+		for (short i = 0; i < playerBankItems.getSlotLimit(); i++)
+		{
+			int row = i / 10;
+			int col = i % 10;
+			glm::ivec2 low(5 + (col * 52), 5 + (row * 52));
+			glm::ivec2 high(low.x + 48, low.y + 48);
+
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				short slot = i + 1;
+				Item* item = playerBankItems.getItem(slot);
+				if (item)
+				{
+					pushTransformMatrix();
+					glColor4f(0.25f, 0.25f, 0.25f, 0.9f);
+					quad(curPos.x + 20, curPos.y + 20, 150, 80);
+					glColor3f(1.0f, 1.0f, 1.0f);
+					ItemInfo* info = getItemInfo(item->getItemId());
+					if (info)
+					{
+						text(curPos.x + 23, curPos.y + 23 + 18, GLUT_BITMAP_HELVETICA_18, info->getName());
+						text(curPos.x + 23, curPos.y + 23 + 18 + 3 + 12, GLUT_BITMAP_HELVETICA_12, info->getDescription());
+					}
+					else
+					{
+						text(curPos.x + 23, curPos.y + 23 + 12, GLUT_BITMAP_HELVETICA_12, "Item information not loaded.");
+					}
+					popTransformMatrix();
+				}
+				break;
+			}
+		}
+	}
+
+public:
+	BankWindow() : UIWindow(glm::ivec2(200, 120), glm::ivec2(600, 500), "Bank") {}
+};
+
 #pragma endregion
 
 #pragma region Attacking
@@ -5006,8 +5258,8 @@ void shootRaycaster(int mode)
 	playerMP -= mode;
 
 	// calculate weapon ray points
-	glm::vec3 rayStart(cx, 1.0f, cz);
-	glm::vec3 rayEnd(lx, 0.0f, lz);
+	glm::vec3 rayStart(cx, cy, cz);
+	glm::vec3 rayEnd(lx, ly, lz);
 	rayEnd *= mode == 1 ? 150.0f : 50.0f;
 	rayEnd += rayStart;
 
@@ -5214,6 +5466,16 @@ public:
 		clearShopItems();
 		for (int i = 1; i <= 10; i++) { addShopItem(i); }
 		getUIWindowByTitle("Shop")->setVisible(true);
+	}
+};
+
+class BankNPC : public INPC
+{
+public:
+	virtual void onClick()
+	{
+		addInformationHistory("Clicked on bank");
+		getUIWindowByTitle("Bank")->setVisible(true);
 	}
 };
 
@@ -5473,6 +5735,8 @@ public:
 
 		glEnd();
 	}
+
+	bool containsPoint(const glm::vec3& pt) { return AxisAlignedBoundingBox(pos, pos + size).containsPoint(pt); }
 };
 
 std::vector<std::unique_ptr<VisibleRegionBorder>> visibleRegionBorders;
@@ -5737,6 +6001,139 @@ public:
 
 #pragma endregion
 
+#pragma region Voxel Editing
+
+VisibleRegionBorder* landOwnershipBorder;
+VisibleRegionBorder* wildernessBorder;
+
+std::vector<glm::ivec3> ownedChunks;
+
+bool isChunkClaimed(const glm::ivec3& pos)
+{
+	for (auto i : ownedChunks) { if (i == pos) { return true; } }
+	return false;
+}
+
+bool isChunkClaimable(const glm::ivec3& pos)
+{
+	glm::vec3 cwp(chunkToWorldPos(pos));
+	return !landOwnershipBorder->containsPoint(cwp) && wildernessBorder->containsPoint(cwp);
+}
+
+bool canClaimChunk(const glm::ivec3& pos) { return !isChunkClaimed(pos) && isChunkClaimable(pos); }
+
+class ClaimChunkDialogueWindow : public IDialogueWindow
+{
+private:
+	bool mSuccess;
+	glm::ivec3 mPos;
+
+public:
+	ClaimChunkDialogueWindow(bool success, const glm::ivec3& pos) : mSuccess(success), mPos(pos) {}
+
+	virtual std::string getMessage() { return mSuccess ? "You have successfully claimed (" + to_string(mPos) + ")." : "You cannot claim (" + to_string(mPos) + ")."; }
+};
+
+class Item_ChunkClaimer : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "Chunk Claimer"; }
+	virtual std::string getDescription() { return "Allows you to claim ownership of a chunk."; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
+		drawQuad2D(12, 12, 24, 24);
+		drawQuad2D(18, 10, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
+		drawQuad2D(18, 8, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
+		drawQuad2D(20, 12, 8, 2);
+		drawQuad2D(14, 14, 20, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(50), BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(140));
+		drawQuad2D(14, 16, 20, 18);
+	}
+	virtual void onUse()
+	{
+		glm::ivec3 chunkPos(getVoxelChunkPos(getPlayerPositionVoxelPos()));
+		bool success = canClaimChunk(chunkPos);
+		if (success) { ownedChunks.push_back(chunkPos); }
+		showDialogueWindow(new ClaimChunkDialogueWindow(success, chunkPos));
+	}
+};
+
+bool voxelEditAirFound = false;
+bool voxelEditSolidFound = false;
+glm::ivec3 voxelEditAir;
+glm::ivec3 voxelEditSolid;
+
+bool VoxelEditCheckCallback(VolumeSampler& s)
+{
+	const VoxelType& vox = getVoxel(s.getPosition().x, s.getPosition().y, s.getPosition().z);
+
+	if (vox.isAir())
+	{
+		voxelEditAir = s.getPosition();
+		voxelEditAirFound = true;
+	}
+	else
+	{
+		voxelEditSolid = s.getPosition();
+		voxelEditSolidFound = true;
+
+		// debug air
+		glColor3f(0.25f, 0.25f, 1.0f);
+		glPushMatrix();
+		glTranslatef((float)voxelEditAir.x + 0.5f, (float)voxelEditAir.y + 0.5f, (float)voxelEditAir.z + 0.5f);
+		glutWireCube(1.00001);
+		glPopMatrix();
+
+		// debug solid
+		glColor3f(1.0f, 0.25f, 0.25f);
+		glPushMatrix();
+		glTranslatef((float)voxelEditSolid.x + 0.5f, (float)voxelEditSolid.y + 0.5f, (float)voxelEditSolid.z + 0.5f);
+		glutWireCube(1.00001);
+		glPopMatrix();
+	}
+
+	return !voxelEditSolidFound;
+}
+
+void updateVoxelEditor()
+{
+	voxelEditAirFound = false;
+	voxelEditSolidFound = false;
+	raycastWithDirection(0, glm::vec3(cx, 1.5f + cy, cz), glm::vec3(lx, ly, lz) * 20.0f, VoxelEditCheckCallback);
+}
+
+void voxelEditorModify(bool place)
+{
+	// determine used position based on action
+	glm::ivec3 usedPos(place ? voxelEditAir : voxelEditSolid);
+
+	// determine if editing is allowed on this voxel
+	if (!isChunkClaimed(getVoxelChunkPos(usedPos)) && wildernessBorder->containsPoint(glm::vec3(usedPos.x, usedPos.y, usedPos.z)))
+	{
+		addInformationHistory("You cannot edit this voxel.");
+		return;
+	}
+
+	// determine block type to use for operation
+	VoxelType usedType;
+	if (place)
+	{
+		usedType.r = getRandomInt(0, 255);
+		usedType.g = getRandomInt(0, 255);
+		usedType.b = getRandomInt(0, 255);
+		usedType.a = 255;
+	}
+	else { usedType = EmptyVoxelType; }
+
+	// apply modification if everything is good
+	setVoxel(usedPos.x, usedPos.y, usedPos.z, usedType.r, usedType.g, usedType.b, usedType.a);
+}
+
+#pragma endregion
+
 #pragma region Statistics & Configuration Management
 
 class INIFile
@@ -5810,6 +6207,7 @@ void loadConfig()
 		playerInventoryItems.addItem(new Item(1000006));
 		playerInventoryItems.addItem(new Item(2000001, 1000));
 		playerInventoryItems.addItem(new Item(2000002, 1000));
+		playerInventoryItems.addItem(new Item(2100000, 100));
 
 		return;
 	}
@@ -6146,14 +6544,27 @@ void loadPortalChunks(Portal* portal)
 	initNoiseChunk(chunkPos.x, 0, chunkPos.z);
 	initNoiseChunk(chunkPos.x, 1, chunkPos.z);
 	initNoiseChunk(chunkPos.x, 2, chunkPos.z);
-	// auto adjust portal height (maybe a portal setting to toggle in the future?)
+	// auto adjust height (maybe a setting to toggle in the future?)
 	portal->setPosition(glm::ivec3(basePos.x, getHighestVoxelAt(basePos.x, basePos.z) + 1, basePos.z));
+}
+
+void loadNpcChunks(LoadedNPC* npc)
+{
+	const glm::vec3& basePos = npc->position;
+	glm::ivec3 chunkPos = getVoxelChunkPos(glm::ivec3((int)basePos.x, (int)basePos.y, (int)basePos.z));
+	// current noise algo usage would generate max 3 chunk height noise
+	initNoiseChunk(chunkPos.x, 0, chunkPos.z);
+	initNoiseChunk(chunkPos.x, 1, chunkPos.z);
+	initNoiseChunk(chunkPos.x, 2, chunkPos.z);
+	// auto adjust npc height (maybe a setting to toggle in the future?)
+	npc->position.y = (float)(getHighestVoxelAt((int)basePos.x, (int)basePos.z) + 1);
 }
 
 void loadTown(const glm::ivec3& pos, const glm::ivec3& trainingGroundOffset, const std::string& name)
 {
 	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(pos.x, pos.z)));
 	addPortal(pos.x + 1024 - 20, 0, pos.z + 1024 - 20, name + " Portal");
+	loadNPC(3, glm::vec3(pos.x + 1024 - 40, 0, pos.z + 1024 - 40));
 
 	if (!(trainingGroundOffset.x == 0 && trainingGroundOffset.y == 0 && trainingGroundOffset.z == 0))
 	{
@@ -6173,6 +6584,9 @@ void loadGameMap()
 	// load portal heights
 	for (auto& portal : portals) { loadPortalChunks(portal.get()); }
 
+	// load npc heights
+	for (auto& npc : loadedNPCs) { loadNpcChunks(npc.get()); }
+
 	// load surrounding chunks (before adjusting player y)
 	loadNewChunks();
 
@@ -6181,11 +6595,11 @@ void loadGameMap()
 	cy = (float)(getHighestVoxelAt(pvox.x, pvox.z) + 1);
 
 	// add land ownership start boundary
-	VisibleRegionBorder* landOwnershipBorder = new VisibleRegionBorder(glm::vec3(-2048, 0, -2048), glm::vec3(3072, 0, 3072));
+	landOwnershipBorder = new VisibleRegionBorder(glm::vec3(-2048, 0, -2048), glm::vec3(3072, 1024, 3072));
 	landOwnershipBorder->setColor(0.0f, 0.8f, 0.0f, 0.5f);
 	addVisibleRegionBorder(landOwnershipBorder);
 	// add wilderness start boundary
-	VisibleRegionBorder* wildernessBorder = new VisibleRegionBorder(glm::vec3(-10240, 0, -10240), glm::vec3(20480, 0, 20480));
+	wildernessBorder = new VisibleRegionBorder(glm::vec3(-10240, 0, -10240), glm::vec3(20480, 1024, 20480));
 	wildernessBorder->setColor(0.8f, 0.0f, 0.0f, 0.5f);
 	addVisibleRegionBorder(wildernessBorder);
 }
@@ -6294,6 +6708,7 @@ void drawGameMap(float elapsed)
 	updateWaveTransition();
 	updatePlayer(elapsed);
 	updateRaycasterAutomaticFire();
+	updateVoxelEditor();
 }
 
 // high resolution frame timing
@@ -6399,7 +6814,9 @@ void renderScene()
 	std::string vpStr = "Player Voxel Pos: " + to_string(playerVoxel) + " | Chunk: " + to_string(getVoxelChunkPos(playerVoxel.x, playerVoxel.y, playerVoxel.z));
 	renderString(5, 210, GLUT_BITMAP_HELVETICA_18, vpStr);
 	std::string cpStr = "Camera: (" + to_string(glm::vec3(cx, cy, cz)) + ") -> (" + to_string(glm::vec3(lx, ly, lz)) + ")";
-	renderSpacedBitmapString(5, 230, 0, GLUT_BITMAP_HELVETICA_18, cpStr.c_str());
+	renderString(5, 230, GLUT_BITMAP_HELVETICA_18, cpStr);
+	std::string veStr = "VEdit :: Air: (" + to_string(voxelEditAir) + ") | Solid: (" + to_string(voxelEditSolid) + ")";
+	renderString(5, 250, GLUT_BITMAP_HELVETICA_18, veStr);
 
 	// render stat bars at the bottom
 
@@ -6435,6 +6852,8 @@ void renderScene()
 
 	// process mouse movement for UI windows
 	for (auto it = uiWindows.rbegin(); it != uiWindows.rend(); it++) { it->get()->onMouseMove(); }
+
+	updateClickSelectedItem();
 
 	// return to 3d drawing context
 	restorePerspectiveProjection();
@@ -6514,6 +6933,8 @@ void attemptItemPickup()
 #define GLUT_KEY_SPACEBAR 32
 #define GLUT_KEY_F 102
 #define GLUT_KEY_T 116
+#define GLUT_KEY_N 110
+#define GLUT_KEY_M 109
 
 void processNormalKeys(unsigned char key, int x, int y)
 {
@@ -6533,6 +6954,8 @@ void processNormalKeys(unsigned char key, int x, int y)
 	case GLUT_KEY_SPACEBAR: playerJumpRequested = true; break;
 	case GLUT_KEY_F: getUIWindowByTitle("Keybinding")->setVisible(!getUIWindowByTitle("Keybinding")->getVisible()); break;
 	case GLUT_KEY_T: getUIWindowByTitle("World Map")->setVisible(!getUIWindowByTitle("World Map")->getVisible()); break;
+	case GLUT_KEY_N: voxelEditorModify(true); break;
+	case GLUT_KEY_M: voxelEditorModify(false); break;
 	}
 
 	// auto bind learned skills to number keys 1 - 9
@@ -6664,8 +7087,8 @@ void mouseButton(int button, int state, int x, int y)
 				upperRight.z++;
 				upperRight.y += 2;
 
-				glm::vec3 rayStart(cx, 1.0f, cz);
-				glm::vec3 rayEnd(lx, 0.0f, lz);
+				glm::vec3 rayStart(cx, 1.5f + cy, cz);
+				glm::vec3 rayEnd(lx, ly, lz);
 				rayEnd *= 150.0f;
 				rayEnd += rayStart;
 
@@ -6778,6 +7201,7 @@ int main(int argc, char** argv)
 	// register npcs
 	registerNPC(1, new TraderNPC());
 	registerNPC(2, new WaveEnterNPC());
+	registerNPC(3, new BankNPC());
 
 	// register items
 	registerItem(1000001, new Item_BasicRaycaster());
@@ -6788,6 +7212,7 @@ int main(int argc, char** argv)
 	registerItem(1000006, new Item_BlastCharger());
 	registerItem(2000001, new Item_RedPotion());
 	registerItem(2000002, new Item_BluePotion());
+	registerItem(2100000, new Item_ChunkClaimer());
 
 	// add UI windows
 	addUIWindow(new InventoryWindow());
@@ -6796,6 +7221,7 @@ int main(int argc, char** argv)
 	addUIWindow(new ShopWindow());
 	addUIWindow(new KeybindingWindow());
 	addUIWindow(new WorldMapWindow());
+	addUIWindow(new BankWindow());
 	addUIWindow(new FuckYouWindow()); // what the flying fuck the ui system crashes on click of background windows (z-order swap part) if exactly 6 windows are registered
 
 	initKeybindings();
@@ -6831,16 +7257,25 @@ dungeon exit constraints and wave initialization functional, mob pathfinding fix
 improved dungeon chunk loading performance, fixed tree generation & applied it globally, added towns & training grounds (basic)
 added land ownership (buildable) and wilderness (pvp + random dungeons) region boundaries (basic)
 
+v5 (03/07/2020):
+voxel placing & destroying, land ownership, inventory item movement, banks
+
 DONE BUT DISABLED:
 Maple map XML wz foothold and layout voxel mapping with depth expansion and dynamic noise, portals, switching maps, ropes/ladders (render only)
 
 NEXT:
-land ownership, biomes, equipment window upgrades, equipment stat bonuses, crafting, skill window icons, keybinding window, dropping inventory items, more skills, potion tiers
-trader positioning fixed, mob scaling, skill scaling, wave boss, bank, voxel placing & destroying
+COMPLEXITY: biomes, crafting, wilderness town generation
+ITEM MANIP: held items, dropping inventory items, chests
+SKILLS: skill window icons, keybinding window
+EQUIPS: equipment window upgrades, equipment stat bonuses
+
+SCALING: mob scaling, skill scaling, wave boss, dungeon difficulty multiplier
+CONTENT: more skills, potion tiers, crafting materials, mob drop diversity
+POLISH: tutorial, graphics optimizations, networking, buddies, parties, guilds
 
 TENTATIVE TODO:
 Map biome, noise, and XML wz mapping and depth expansion generation upgrades
 Equipment and item voxel mapping generation & UI windows
 Improve combat item and skill support, improve mob support
-Map regeneration, mob stat regen, basic tutorial, UI improvement
+Map regeneration, mob stat regen
 */
