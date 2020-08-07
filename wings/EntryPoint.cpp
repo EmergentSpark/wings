@@ -3808,8 +3808,159 @@ public:
 	}
 };
 
+namespace ItemConstants
+{
+	bool isWeapon(int itemId) { return itemId >= 1302000 && itemId < 1493000; }
+	bool isEquipment(int itemId) { return itemId < 2000000 && itemId != 0; }
+};
+
+enum class EquipSlot
+{
+	HAT = 1,
+	FACE_ACCESSORY = 2,
+	EYE_ACCESSORY = 3,
+	EARRINGS = 4,
+	TOP = 5,
+	OVERALL = 5,
+	PANTS = 6,
+	SHOES = 7,
+	GLOVES = 8,
+	CAPE = 9,
+	SHIELD = 10,
+	WEAPON = 11,
+	//RING("Ri", -12, -13, -15, -16),
+	PENDANT = 17,
+	TAMED_MOB = 18,
+	SADDLE = 19,
+	MEDAL = 49,
+	BELT = 50,
+	PET_EQUIP = 51
+};
+
+enum class EquipType
+{
+	UNDEFINED = -1,
+	ACCESSORY = 0,
+	CAP = 100,
+	CAPE = 110,
+	COAT = 104,
+	FACE = 2,
+	GLOVES = 108,
+	HAIR = 3,
+	LONGCOAT = 105,
+	PANTS = 106,
+	PET_EQUIP = 180,
+	PET_EQUIP_FIELD = 181,
+	PET_EQUIP_LABEL = 182,
+	PET_EQUIP_QUOTE = 183,
+	RING = 111,
+	SHIELD = 109,
+	SHOES = 107,
+	TAMING = 190,
+	TAMING_SADDLE = 191,
+	SWORD = 1302,
+	AXE = 1312,
+	MACE = 1322,
+	DAGGER = 1332,
+	WAND = 1372,
+	STAFF = 1382,
+	SWORD_2H = 1402,
+	AXE_2H = 1412,
+	MACE_2H = 1422,
+	SPEAR = 1432,
+	POLEARM = 1442,
+	BOW = 1452,
+	CROSSBOW = 1462,
+	CLAW = 1472,
+	KNUCKLER = 1482,
+	PISTOL = 1492
+};
+
+EquipType getEquipTypeById(int itemid)
+{
+	EquipType ret;
+	int val = itemid / 100000;
+
+	if (val == 13 || val == 14) { ret = (EquipType)(itemid / 1000); }
+	else { ret = (EquipType)(itemid / 10000); }
+
+	return ret; // TODO?: can be undefined; must fall under specified values to technically function perfectly in all cases..?
+}
+
+EquipSlot getEquipSlotByType(EquipType type)
+{
+	switch (type)
+	{
+	case EquipType::CAP:
+		return EquipSlot::HAT;
+	case EquipType::SWORD:
+	case EquipType::AXE:
+	case EquipType::MACE:
+	case EquipType::DAGGER:
+	case EquipType::WAND:
+	case EquipType::STAFF:
+	case EquipType::SWORD_2H:
+	case EquipType::AXE_2H:
+	case EquipType::MACE_2H:
+	case EquipType::SPEAR:
+	case EquipType::POLEARM:
+	case EquipType::BOW:
+	case EquipType::CROSSBOW:
+	case EquipType::CLAW:
+	case EquipType::KNUCKLER:
+	case EquipType::PISTOL:
+		return EquipSlot::WEAPON;
+	}
+}
+
+EquipSlot getEquipSlotById(int itemId) { return getEquipSlotByType(getEquipTypeById(itemId)); }
+
+std::string getEquipTypeName(EquipType type)
+{
+	/*
+	UNDEFINED(-1),
+		ACCESSORY(0),
+		CAP(100),
+		CAPE(110),
+		COAT(104),
+		FACE(2),
+		GLOVES(108),
+		HAIR(3),
+		LONGCOAT(105),
+		PANTS(106),
+		PET_EQUIP(180),
+		PET_EQUIP_FIELD(181),
+		PET_EQUIP_LABEL(182),
+		PET_EQUIP_QUOTE(183),
+		RING(111),
+		SHIELD(109),
+		SHOES(107),
+		TAMING(190),
+		TAMING_SADDLE(191),
+		SWORD(1302),
+		AXE(1312),
+		MACE(1322),
+		DAGGER(1332),
+		WAND(1372),
+		STAFF(1382),
+		SWORD_2H(1402),
+		AXE_2H(1412),
+		MACE_2H(1422),
+		SPEAR(1432),
+		POLEARM(1442),
+		BOW(1452),
+		CROSSBOW(1462),
+		CLAW(1472),
+		KNUCKLER(1482),
+		PISTOL(1492)
+		*/
+		return "TODO";
+}
+
+std::string getEquipTypeNameById(int itemId) { return getEquipTypeName(getEquipTypeById(itemId)); }
+
 Inventory playerInventoryItems(InventoryType::EQUIP, 36);
-std::vector<int> playerEquipmentItems;
+Inventory playerEquipmentItems(InventoryType::EQUIP, 51);
 Inventory playerBankItems(InventoryType::BANK, 15);
 
 #pragma endregion
@@ -4089,10 +4240,11 @@ public:
 	virtual void onKilled(CombatEntity* entity)
 	{
 		playerGainEXP(2);
-		// TODO: properly should know which skill killed and give exp accordingly
-		for (unsigned int i = 0; i < playerEquipmentItems.size(); i++)
+		// TODO: properly should know which skill killed and give exp accordingly. also skillids shouldn't necessarily directly correlate to itemids
+		for (short slot = 1; slot < playerEquipmentItems.getSlotLimit(); slot++)
 		{
-			playerSkillGainExp(playerEquipmentItems[i], 2);
+			Item* equip = playerEquipmentItems.getItem(slot);
+			if (equip) { playerSkillGainExp(equip->getItemId(), 2); }
 		}
 	}
 };
@@ -4567,14 +4719,23 @@ protected:
 
 					if (type == InventoryType::EQUIP)
 					{
-						playerEquipmentItems.push_back(item->getItemId());
+						EquipSlot eqInvSlot = getEquipSlotById(item->getItemId());
+
+						// remove an existing equip in the target slot if exists
+						Item* existingEq = playerEquipmentItems.getItem((short)eqInvSlot);
+						if (existingEq) { playerEquipmentItems.releaseSlot((short)eqInvSlot); }
+
+						// equip item into its appropriate slot
+						playerInventoryItems.releaseSlot(slot);
+						playerEquipmentItems.setSlot((short)eqInvSlot, item);
 
 						// TODO: dont add skill if already known!
 						// TODO: should be skill id taught by item with given item id
 						playerSkills.push_back(std::unique_ptr<LearnedSkill>(new LearnedSkill(item->getItemId(), 1, 0)));
 						addInformationHistory("Learned skill (" + loadedSkills[item->getItemId()]->getName() + ")");
 
-						playerInventoryItems.removeItem(slot);
+						// add old item back into inventory if it exists. doing this after ensures no overflow if inv is full when equipping
+						if (existingEq) { playerInventoryItems.addItem(existingEq); }
 					}
 					else if (type == InventoryType::USE)
 					{
@@ -4634,40 +4795,77 @@ class EquipmentWindow : public UIWindow
 protected:
 	virtual void draw()
 	{
-		for (unsigned int i = 0; i < playerEquipmentItems.size(); i++)
+		for (short i = 0; i < playerEquipmentItems.getSlotLimit(); i++)
 		{
 			int row = i / 6;
 			int col = i % 6;
-			glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-			quad(5 + (col * 29), 5 + (row * 29), 25, 25);
-			glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-			text(5 + (col * 29), 25 + (row * 29), GLUT_BITMAP_HELVETICA_18, std::to_string(playerEquipmentItems[i]));
+
+			short slot = i + 1;
+			Item* item = playerEquipmentItems.getItem(slot);
+
+			glColor4f(0.0f, 0.0f, 0.0f, item ? 0.75f : 0.25f);
+			drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
+			if (item)
+			{
+				glColor4f(1.0f, 1.0f, 1.0f, 0.25f);
+				text(5 + (col * 52), 5 + (row * 52) + 13, GLUT_BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
+
+				// draw icon if loaded
+				ItemInfo* info = getItemInfo(item->getItemId());
+				if (info)
+				{
+					glPushMatrix();
+					glTranslatef((float)(5 + (col * 52)), (float)(5 + (row * 52)), 0.0f);
+					info->drawIcon();
+					glPopMatrix();
+				}
+			}
 		}
 	}
 
 	virtual void click(int x, int y)
 	{
-		glm::vec2 curPos(x, y);
+		glm::ivec2 curPos(x, y);
 
-		for (unsigned int i = 0; i < playerEquipmentItems.size(); i++)
+		for (short i = 0; i < playerEquipmentItems.getSlotLimit(); i++)
 		{
 			int row = i / 6;
 			int col = i % 6;
-			glm::vec2 low(5 + (col * 29), 5 + (row * 29));
-			glm::vec2 high(low.x + 25, low.y + 25);
+			glm::ivec2 low(5 + (col * 52), 5 + (row * 52));
+			glm::ivec2 high(low.x + 48, low.y + 48);
 
 			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
 			{
-				addInformationHistory("Click on equipment item " + std::to_string(i));
-				playerInventoryItems.addItem(new Item(playerEquipmentItems[i]));
-				playerEquipmentItems.erase(playerEquipmentItems.begin() + i);
+				short slot = i + 1;
+
+				addInformationHistory("Click on equipment slot " + std::to_string(slot));
+
+				Item* item = playerEquipmentItems.getItem(slot);
+				if (!clickSelectedItem && item)
+				{
+					clickSelectedItem = item;
+					clickSelectedItemInventory = &playerEquipmentItems;
+				}
+				// handle double clicks
+				else
+				{
+					clickSelectedItem = 0;
+
+					// disallow inventory overflow
+					if (playerInventoryItems.getNumFreeSlot() == 0) { addInformationHistory("No free inventory space!"); }
+					else
+					{
+						Item* eq = playerEquipmentItems.releaseSlot(slot);
+						playerInventoryItems.addItem(eq);
+					}
+				}
 				break;
 			}
 		}
 	}
 
 public:
-	EquipmentWindow() : UIWindow(glm::ivec2(495, 95), glm::ivec2(195, 340), "Equipment") {}
+	EquipmentWindow() : UIWindow(glm::ivec2(495, 95), glm::ivec2(330, 500), "Equipment") {}
 };
 
 class SkillsWindow : public UIWindow
@@ -4811,6 +5009,38 @@ void onDialogueWindowClick(int x, int y)
 
 #pragma region Keybinding
 
+struct KeybindingAction
+{
+	int id;
+	std::string name;
+	std::function<void()> func;
+	int boundTo;
+};
+
+std::vector<std::unique_ptr<KeybindingAction>> keybindingActions;
+
+void registerKeybindingAction(int id, const std::string& name, std::function<void()> func)
+{
+	KeybindingAction* action = new KeybindingAction();
+	action->id = id;
+	action->name = name;
+	action->func = func;
+	action->boundTo = 0;
+	keybindingActions.push_back(std::unique_ptr<KeybindingAction>(action));
+}
+
+KeybindingAction* getKeybindingActionById(int id)
+{
+	for (unsigned int i = 0; i < keybindingActions.size(); i++)
+	{
+		if (keybindingActions[i]->id == id)
+		{
+			return keybindingActions[i].get();
+		}
+	}
+	return 0;
+}
+
 struct Keybinding
 {
 	int keycode;
@@ -4821,28 +5051,97 @@ struct Keybinding
 
 	enum class Type
 	{
+		UNASSIGNED,
 		INTERNAL,
 		SKILL,
 		ITEM
 	};
 
 	Type type;
+	int actionId;
 	LearnedSkill* skill;
 	Item* item;
 };
 std::unordered_map<int, Keybinding> keybinds;
+
+void setKeybindingAction(int keycode, Keybinding::Type type, int actionId)
+{
+	Keybinding& kb = keybinds[keycode];
+	if (kb.type == Keybinding::Type::INTERNAL) { getKeybindingActionById(kb.actionId)->boundTo = 0; }
+	kb.type = type;
+	kb.actionId = actionId;
+	if (type == Keybinding::Type::INTERNAL)
+	{
+		KeybindingAction* action = getKeybindingActionById(actionId);
+		if (action->boundTo != 0) { setKeybindingAction(action->boundTo, Keybinding::Type::UNASSIGNED, 0); }
+		action->boundTo = keycode;
+	}
+}
+
+KeybindingAction* clickSelectedKeybind = 0;
+
+void updateClickSelectedKeybind()
+{
+	if (clickSelectedKeybind)
+	{
+		glColor4f(0.5f, 0.5f, 0.5f, 0.5f);
+		drawQuad2D(currentMousePos.x + 5, currentMousePos.y + 5, 48, 48);
+		glColor4f(1.0f, 1.0f, 1.0f, 0.5f);
+		std::vector<std::string> parts = Tools::StringUtil::explode(clickSelectedKeybind->name, ' ');
+		for (unsigned int i = 0; i < parts.size(); i++)
+		{
+			renderString(currentMousePos.x + 5, currentMousePos.y + 5 + 15 + (i * 14), GLUT_BITMAP_8_BY_13, parts[i]);
+		}
+	}
+}
 
 class KeybindingWindow : public UIWindow
 {
 protected:
 	virtual void draw()
 	{
+		// keyboard display area
 		for (auto& keybind : keybinds)
 		{
 			glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
 			quad(keybind.second.position.x, keybind.second.position.y, keybind.second.size.x, keybind.second.size.y);
+			
+			if (keybind.second.type == Keybinding::Type::INTERNAL)
+			{
+				KeybindingAction* action = getKeybindingActionById(keybind.second.actionId);
+				glColor4f(0.5f, 0.5f, 0.5f, 0.75f);
+				quad(keybind.second.position.x, keybind.second.position.y, keybind.second.size.x, keybind.second.size.y);
+				glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
+				std::vector<std::string> parts = Tools::StringUtil::explode(action->name, ' ');
+				for (unsigned int i = 0; i < parts.size(); i++)
+				{
+					text(keybind.second.position.x, 15 + keybind.second.position.y + (i * 14), GLUT_BITMAP_8_BY_13, parts[i]);
+				}
+			}
+
 			glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-			text(5 + keybind.second.position.x, 25 + keybind.second.position.y, GLUT_BITMAP_9_BY_15, keybind.second.text);
+			text(5 + keybind.second.position.x, 45 + keybind.second.position.y, GLUT_BITMAP_9_BY_15, keybind.second.text);
+		}
+
+		// all internal action display area
+		glColor3f(0.25f, 0.25f, 0.25f);
+		quad(5, 325, 650, 175);
+
+		for (unsigned int i = 0; i < keybindingActions.size(); i++)
+		{
+			int row = i / 6;
+			int col = i % 6;
+
+			KeybindingAction* action = keybindingActions[i].get();
+			glColor4f(0.5f, 0.5f, 0.5f, action->boundTo ? 0.25f : 0.75f);
+			quad(10 + (col * 52), 330 + (row * 52), 48, 48);
+			glColor4f(1.0f, 1.0f, 1.0f, action->boundTo ? 0.25f : 0.75f);
+			std::vector<std::string> parts = Tools::StringUtil::explode(action->name, ' ');
+			for (unsigned int ii = 0; ii < parts.size(); ii++)
+			{
+				text(10 + (col * 52), 330 + 15 + (row * 52) + (ii * 14), GLUT_BITMAP_8_BY_13, parts[ii]);
+			}
+			
 		}
 	}
 
@@ -4850,6 +5149,7 @@ protected:
 	{
 		glm::vec2 curPos(x, y);
 
+		// check against the keyboard key area
 		for (auto& keybind : keybinds)
 		{
 			glm::vec2 low(keybind.second.position.x, keybind.second.position.y);
@@ -4857,86 +5157,165 @@ protected:
 
 			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
 			{
+				if (!clickSelectedKeybind && keybind.second.type == Keybinding::Type::INTERNAL)
+				{
+					clickSelectedKeybind = getKeybindingActionById(keybind.second.actionId);
+				}
+				else if (clickSelectedKeybind)
+				{
+					setKeybindingAction(keybind.second.keycode, Keybinding::Type::INTERNAL, clickSelectedKeybind->id);
+					clickSelectedKeybind = 0;
+				}
+
 				addInformationHistory("Click on keybind " + std::to_string(keybind.second.keycode));
+				break;
+			}
+		}
+
+		// check against the internal action display area
+		for (unsigned int i = 0; i < keybindingActions.size(); i++)
+		{
+			int row = i / 6;
+			int col = i % 6;
+
+			glm::vec2 low(10 + (col * 52), 330 + (row * 52));
+			glm::vec2 high(low.x + 48, low.y + 48);
+
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				if (!clickSelectedKeybind && keybindingActions[i]->boundTo == 0)
+				{
+					clickSelectedKeybind = keybindingActions[i].get();
+				}
+				else if (clickSelectedKeybind)
+				{
+					setKeybindingAction(clickSelectedKeybind->boundTo, Keybinding::Type::UNASSIGNED, 0);
+					clickSelectedKeybind = 0;
+				}
+
+				addInformationHistory("Click on keybindAction " + std::to_string(keybindingActions[i]->id));
 				break;
 			}
 		}
 	}
 
 public:
-	KeybindingWindow() : UIWindow(glm::ivec2(200, 400), glm::ivec2(700, 300), "Keybinding") {}
+	KeybindingWindow() : UIWindow(glm::ivec2(200, 200), glm::ivec2(800, 550), "Keybinding") {}
 };
 
 void initKeybindInfo(int x, int y, int keycode, const std::string& text, int sx)
 {
 	Keybinding keybind;
 	keybind.position = glm::ivec2(x, y);
-	keybind.size = glm::ivec2(sx, 30);
+	keybind.size = glm::ivec2(sx, 48);
 	keybind.text = text;
 	keybind.keycode = keycode;
+	keybind.type = Keybinding::Type::UNASSIGNED;
 	keybinds[keycode] = keybind;
 }
 
-void initKeybindInfo(int x, int y, int keycode, const std::string& text) { initKeybindInfo(x, y, keycode, text, 30); }
+void initKeybindInfo(int x, int y, int keycode, const std::string& text) { initKeybindInfo(x, y, keycode, text, 48); }
+
+#define GLUT_KEY_Q 113
+#define GLUT_KEY_W 119
+#define GLUT_KEY_E 101
+#define GLUT_KEY_R 114
+#define GLUT_KEY_I 105
+#define GLUT_KEY_A 97
+#define GLUT_KEY_S 115
+#define GLUT_KEY_D 100
+#define GLUT_KEY_Z 122
+#define GLUT_KEY_0 48
+#define GLUT_KEY_1 49
+#define GLUT_KEY_2 50
+#define GLUT_KEY_3 51
+#define GLUT_KEY_4 52
+#define GLUT_KEY_5 53
+#define GLUT_KEY_6 54
+#define GLUT_KEY_7 55
+#define GLUT_KEY_8 56
+#define GLUT_KEY_9 57
+#define GLUT_KEY_SPACEBAR 32
+#define GLUT_KEY_F 102
+#define GLUT_KEY_T 116
+#define GLUT_KEY_N 110
+#define GLUT_KEY_M 109
+#define GLUT_KEY_X 120
+#define GLUT_KEY_TILDE 96
+#define GLUT_KEY_TAB 9
+#define GLUT_KEY_Y 121
+#define GLUT_KEY_U 117
+#define GLUT_KEY_O 111
+#define GLUT_KEY_P 112
+#define GLUT_KEY_G 103
+#define GLUT_KEY_H 104
+#define GLUT_KEY_J 106
+#define GLUT_KEY_K 107
+#define GLUT_KEY_L 108
+#define GLUT_KEY_C 99
+#define GLUT_KEY_V 118
+#define GLUT_KEY_B 98
 
 void initKeybindings()
 {
 	// number row
 	int row1baseX = 10;
 	int row1baseY = 10;
-	initKeybindInfo(row1baseX, row1baseY, 0, "`~");
-	initKeybindInfo(row1baseX + 30 + 10, row1baseY, 1, "1");
-	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10, row1baseY, 2, "2");
-	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 3, "3");
-	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 4, "4");
-	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 5, "5");
-	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 6, "6");
-	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 7, "7");
-	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 8, "8");
-	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 9, "9");
-	initKeybindInfo(row1baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row1baseY, 10, "0");
+	initKeybindInfo(row1baseX, row1baseY, GLUT_KEY_TILDE, "`~");
+	initKeybindInfo(row1baseX + 48 + 10, row1baseY, GLUT_KEY_1, "1");
+	initKeybindInfo(row1baseX + 48 + 10 + 48 + 10, row1baseY, GLUT_KEY_2, "2");
+	initKeybindInfo(row1baseX + 48 + 10 + 48 + 10 + 48 + 10, row1baseY, GLUT_KEY_3, "3");
+	initKeybindInfo(row1baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row1baseY, GLUT_KEY_4, "4");
+	initKeybindInfo(row1baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row1baseY, GLUT_KEY_5, "5");
+	initKeybindInfo(row1baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row1baseY, GLUT_KEY_6, "6");
+	initKeybindInfo(row1baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row1baseY, GLUT_KEY_7, "7");
+	initKeybindInfo(row1baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row1baseY, GLUT_KEY_8, "8");
+	initKeybindInfo(row1baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row1baseY, GLUT_KEY_9, "9");
+	initKeybindInfo(row1baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row1baseY, GLUT_KEY_0, "0");
 	// first letter row
-	int row2baseX = row1baseX + 30 + 10 + 15;
-	int row2baseY = row1baseY + 30 + 10;
-	initKeybindInfo(row1baseX, row2baseY, 100, "Tab", 45);
-	initKeybindInfo(row2baseX, row2baseY, 11, "Q");
-	initKeybindInfo(row2baseX + 30 + 10, row2baseY, 12, "W");
-	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10, row2baseY, 13, "E");
-	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 14, "R");
-	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 15, "T");
-	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 16, "Y");
-	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 17, "U");
-	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 18, "I");
-	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 19, "O");
-	initKeybindInfo(row2baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row2baseY, 20, "P");
+	int row2baseX = row1baseX + 48 + 10 + 15;
+	int row2baseY = row1baseY + 48 + 10;
+	initKeybindInfo(row1baseX, row2baseY, GLUT_KEY_TAB, "Tab", 45 + 18);
+	initKeybindInfo(row2baseX, row2baseY, GLUT_KEY_Q, "Q");
+	initKeybindInfo(row2baseX + 48 + 10, row2baseY, GLUT_KEY_W, "W");
+	initKeybindInfo(row2baseX + 48 + 10 + 48 + 10, row2baseY, GLUT_KEY_E, "E");
+	initKeybindInfo(row2baseX + 48 + 10 + 48 + 10 + 48 + 10, row2baseY, GLUT_KEY_R, "R");
+	initKeybindInfo(row2baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row2baseY, GLUT_KEY_T, "T");
+	initKeybindInfo(row2baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row2baseY, GLUT_KEY_Y, "Y");
+	initKeybindInfo(row2baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row2baseY, GLUT_KEY_U, "U");
+	initKeybindInfo(row2baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row2baseY, GLUT_KEY_I, "I");
+	initKeybindInfo(row2baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row2baseY, GLUT_KEY_O, "O");
+	initKeybindInfo(row2baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row2baseY, GLUT_KEY_P, "P");
 	// second letter row
 	int row3baseX = row2baseX + 15;
-	int row3baseY = row2baseY + 30 + 10;
-	initKeybindInfo(row1baseX, row3baseY, 101, "CpLock", 60);
-	initKeybindInfo(row3baseX, row3baseY, 21, "A");
-	initKeybindInfo(row3baseX + 30 + 10, row3baseY, 22, "S");
-	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10, row3baseY, 23, "D");
-	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 24, "F");
-	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 25, "G");
-	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 26, "H");
-	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 27, "J");
-	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 28, "K");
-	initKeybindInfo(row3baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row3baseY, 29, "L");
+	int row3baseY = row2baseY + 48 + 10;
+	initKeybindInfo(row1baseX, row3baseY, 1002, "CpLock", 60 + 18);
+	initKeybindInfo(row3baseX, row3baseY, GLUT_KEY_A, "A");
+	initKeybindInfo(row3baseX + 48 + 10, row3baseY, GLUT_KEY_S, "S");
+	initKeybindInfo(row3baseX + 48 + 10 + 48 + 10, row3baseY, GLUT_KEY_D, "D");
+	initKeybindInfo(row3baseX + 48 + 10 + 48 + 10 + 48 + 10, row3baseY, GLUT_KEY_F, "F");
+	initKeybindInfo(row3baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row3baseY, GLUT_KEY_G, "G");
+	initKeybindInfo(row3baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row3baseY, GLUT_KEY_H, "H");
+	initKeybindInfo(row3baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row3baseY, GLUT_KEY_J, "J");
+	initKeybindInfo(row3baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row3baseY, GLUT_KEY_K, "K");
+	initKeybindInfo(row3baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row3baseY, GLUT_KEY_L, "L");
 	// third letter row
 	int row4baseX = row3baseX + 15;
-	int row4baseY = row3baseY + 30 + 10;
-	initKeybindInfo(row1baseX, row4baseY, 102, "Shift", 75);
-	initKeybindInfo(row4baseX, row4baseY, 30, "Z");
-	initKeybindInfo(row4baseX + 30 + 10, row4baseY, 31, "X");
-	initKeybindInfo(row4baseX + 30 + 10 + 30 + 10, row4baseY, 32, "C");
-	initKeybindInfo(row4baseX + 30 + 10 + 30 + 10 + 30 + 10, row4baseY, 33, "V");
-	initKeybindInfo(row4baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row4baseY, 34, "B");
-	initKeybindInfo(row4baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row4baseY, 35, "N");
-	initKeybindInfo(row4baseX + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10 + 30 + 10, row4baseY, 36, "M");
+	int row4baseY = row3baseY + 48 + 10;
+	initKeybindInfo(row1baseX, row4baseY, 1001, "Shift", 75 + 18);
+	initKeybindInfo(row4baseX, row4baseY, GLUT_KEY_Z, "Z");
+	initKeybindInfo(row4baseX + 48 + 10, row4baseY, GLUT_KEY_X, "X");
+	initKeybindInfo(row4baseX + 48 + 10 + 48 + 10, row4baseY, GLUT_KEY_C, "C");
+	initKeybindInfo(row4baseX + 48 + 10 + 48 + 10 + 48 + 10, row4baseY, GLUT_KEY_V, "V");
+	initKeybindInfo(row4baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row4baseY, GLUT_KEY_B, "B");
+	initKeybindInfo(row4baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row4baseY, GLUT_KEY_N, "N");
+	initKeybindInfo(row4baseX + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10 + 48 + 10, row4baseY, GLUT_KEY_M, "M");
 	// spacebar row
-	int row5baseY = row4baseY + 30 + 10;
+	int row5baseY = row4baseY + 48 + 10;
+	initKeybindInfo(175, row5baseY, GLUT_KEY_SPACEBAR, "Space", 325);
 }
 
+// UNUSED, POSSIBLE REMOVE
 void registerKeybindAction(int keycode, Keybinding::Type actionType, LearnedSkill* skill, Item* item) {}
 
 #pragma endregion
@@ -5179,6 +5558,249 @@ protected:
 public:
 	BankWindow() : UIWindow(glm::ivec2(200, 120), glm::ivec2(600, 500), "Bank") {}
 };
+
+#pragma region Crafting
+
+Inventory playerCraftingItems(InventoryType::UNDEFINED, 9);
+
+struct CraftingRecipe
+{
+	Inventory* recipe;
+	int itemId;
+	short quantity;
+
+	CraftingRecipe(int _itemId, short _quantity) : itemId(_itemId), quantity(_quantity) { recipe = new Inventory(InventoryType::UNDEFINED, 9); }
+
+	void setIngredient(glm::ivec2 position, int itemId, int quantity) { recipe->setSlot(((position.y - 1) * 3) + position.x, new Item(itemId, quantity)); }
+
+	short getMaxCraftable()
+	{
+		short ret = 32000; // almost signed short max; temporary
+
+		for (short i = 1; i < recipe->getSlotLimit(); i++)
+		{
+			Item* invItem = playerCraftingItems.getItem(i);
+			Item* rcpItem = recipe->getItem(i);
+			if ((invItem != 0 && rcpItem == 0) || (invItem == 0 && rcpItem != 0)) { return 0; } // extra or lacking existence of items necessary in slots means immediate mismatch
+			if (rcpItem == 0) { continue; } // ignore empty/unused slots
+			if (invItem->getItemId() == rcpItem->getItemId() && invItem->getQuantity() >= rcpItem->getQuantity()) // determine max craftable result items from single slot ingredient quantity
+			{
+				ret = std::min(ret, (short)(invItem->getQuantity() / rcpItem->getQuantity()));
+			}
+			else { return 0; } // item id mismatch or insufficient quantity means immediate failure
+		}
+
+		return ret;
+	}
+
+	void consumeIngredients()
+	{
+		for (short i = 1; i < recipe->getSlotLimit(); i++)
+		{
+			if (recipe->getItem(i) == 0) { continue; }
+			playerCraftingItems.removeItem(i, recipe->getItem(i)->getQuantity(), false);
+		}
+	}
+
+	Item* createItem() { return new Item(itemId, quantity); }
+};
+
+std::vector<std::unique_ptr<CraftingRecipe>> craftingRecipes;
+
+CraftingRecipe* createCraftingRecipe(int itemId, short quantity)
+{
+	CraftingRecipe* recipe = new CraftingRecipe(itemId, quantity);
+	craftingRecipes.push_back(std::unique_ptr<CraftingRecipe>(recipe));
+	return recipe;
+}
+
+class CraftingWindow : public UIWindow
+{
+private:
+	CraftingRecipe* mUsableRecipe;
+
+protected:
+	virtual void draw()
+	{
+		for (short i = 0; i < playerCraftingItems.getSlotLimit(); i++)
+		{
+			int row = i / 3;
+			int col = i % 3;
+
+			short slot = i + 1;
+			Item* item = playerCraftingItems.getItem(slot);
+
+			glColor4f(0.0f, 0.0f, 0.0f, item ? 0.75f : 0.25f);
+			drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
+			if (item)
+			{
+				glColor4f(1.0f, 1.0f, 1.0f, 0.25f);
+				text(5 + (col * 52), 5 + (row * 52) + 13, GLUT_BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
+
+				// show quantity for non-equips
+				if (item->getInventoryType() != InventoryType::EQUIP)
+				{
+					glColor3f(1.0f, 1.0f, 1.0f);
+					std::string quantityStr = std::to_string(item->getQuantity());
+					text(5 + (col * 52) + 45 - getStringWidth(GLUT_BITMAP_HELVETICA_12, quantityStr), 5 + (row * 52) + 45, GLUT_BITMAP_HELVETICA_12, quantityStr);
+				}
+
+				// draw icon if loaded
+				ItemInfo* info = getItemInfo(item->getItemId());
+				if (info)
+				{
+					glPushMatrix();
+					glTranslatef((float)(5 + (col * 52)), (float)(5 + (row * 52)), 0.0f);
+					info->drawIcon();
+					glPopMatrix();
+				}
+			}
+		}
+
+		glColor3f(0.0f, 0.0f, 0.0f);
+		text(170, 85, GLUT_BITMAP_HELVETICA_18, "->");
+
+		// show (potentially) crafted item
+		mUsableRecipe = 0;
+		for (unsigned int i = 0; i < craftingRecipes.size(); i++)
+		{
+			if (craftingRecipes[i]->getMaxCraftable() > 0) { mUsableRecipe = craftingRecipes[i].get(); break; }
+		}
+		Item* craftedItem = mUsableRecipe ? mUsableRecipe->createItem() : 0;
+
+		glColor4f(0.0f, 0.0f, 0.0f, craftedItem ? 0.75f : 0.25f);
+		drawQuad2D(200, 57, 48, 48);
+
+		if (craftedItem)
+		{
+			// show quantity for non-equips
+			if (craftedItem->getInventoryType() != InventoryType::EQUIP)
+			{
+				glColor3f(1.0f, 1.0f, 1.0f);
+				std::string quantityStr = std::to_string(craftedItem->getQuantity());
+				text(200 + 45 - getStringWidth(GLUT_BITMAP_HELVETICA_12, quantityStr), 57 + 45, GLUT_BITMAP_HELVETICA_12, quantityStr);
+			}
+
+			// draw icon if loaded
+			ItemInfo* info = getItemInfo(craftedItem->getItemId());
+			if (info)
+			{
+				glPushMatrix();
+				glTranslatef((float)200, (float)57, 0.0f);
+				info->drawIcon();
+				glPopMatrix();
+			}
+		}
+
+		delete craftedItem; // TODO: ummm we needa deal with this memory properly....
+	}
+
+	virtual void click(int x, int y)
+	{
+		glm::ivec2 curPos(x, y);
+
+		for (short i = 0; i < playerCraftingItems.getSlotLimit(); i++)
+		{
+			int row = i / 3;
+			int col = i % 3;
+			glm::ivec2 low(5 + (col * 52), 5 + (row * 52));
+			glm::ivec2 high(low.x + 48, low.y + 48);
+
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				short slot = i + 1;
+
+				addInformationHistory("Click on crafting slot " + std::to_string(slot));
+
+				Item* item = playerCraftingItems.getItem(slot);
+				if (!clickSelectedItem && item)
+				{
+					clickSelectedItem = item;
+					clickSelectedItemInventory = &playerCraftingItems;
+				}
+				// handle transferring between inventories
+				else if (clickSelectedItem && clickSelectedItemInventory != &playerCraftingItems)
+				{
+					// do nothing if the target isn't an empty slot
+					if (!item)
+					{
+						Item* source = clickSelectedItemInventory->releaseSlot(clickSelectedItem->getPosition());
+						playerCraftingItems.setSlot(slot, source);
+						clickSelectedItem = 0;
+					}
+				}
+				// handle slot swaps
+				else if (clickSelectedItem && slot != clickSelectedItem->getPosition())
+				{
+					playerCraftingItems.move(clickSelectedItem->getPosition(), slot, 1);
+					clickSelectedItem = 0;
+				}
+				// handle double clicks
+				else
+				{
+					clickSelectedItem = 0;
+				}
+				break;
+			}
+		}
+
+		// check for crafting result clicks
+		glm::ivec2 low(200, 57);
+		glm::ivec2 high(low.x + 48, low.y + 48);
+
+		if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+		{
+			if (mUsableRecipe)
+			{
+				mUsableRecipe->consumeIngredients();
+				playerInventoryItems.addItem(mUsableRecipe->createItem());
+			}
+		}
+	}
+
+	virtual void mouseMove(int x, int y)
+	{
+		glm::ivec2 curPos(x, y);
+
+		for (short i = 0; i < playerCraftingItems.getSlotLimit(); i++)
+		{
+			int row = i / 3;
+			int col = i % 3;
+			glm::ivec2 low(5 + (col * 52), 5 + (row * 52));
+			glm::ivec2 high(low.x + 48, low.y + 48);
+
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				short slot = i + 1;
+				Item* item = playerCraftingItems.getItem(slot);
+				if (item)
+				{
+					pushTransformMatrix();
+					glColor4f(0.25f, 0.25f, 0.25f, 0.9f);
+					quad(curPos.x + 20, curPos.y + 20, 150, 80);
+					glColor3f(1.0f, 1.0f, 1.0f);
+					ItemInfo* info = getItemInfo(item->getItemId());
+					if (info)
+					{
+						text(curPos.x + 23, curPos.y + 23 + 18, GLUT_BITMAP_HELVETICA_18, info->getName());
+						text(curPos.x + 23, curPos.y + 23 + 18 + 3 + 12, GLUT_BITMAP_HELVETICA_12, info->getDescription());
+					}
+					else
+					{
+						text(curPos.x + 23, curPos.y + 23 + 12, GLUT_BITMAP_HELVETICA_12, "Item information not loaded.");
+					}
+					popTransformMatrix();
+				}
+				break;
+			}
+		}
+	}
+
+public:
+	CraftingWindow() : UIWindow(glm::ivec2(200, 120), glm::ivec2(265, 190), "Crafting") {}
+};
+
+#pragma endregion
 
 #pragma endregion
 
@@ -5913,11 +6535,15 @@ public:
 		mazeGenerate();
 
 		// load spawnpoints
-		for (int i = 0; i < 10; i++)
+		if (mazeClearedTiles.size() > 3)
 		{
-			glm::ivec2 pos = mazeClearedTiles[randomNumber(3, mazeClearedTiles.size() - 1)];
-			spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(mPosition.x + (pos.x * 16) + 3, 0.0f, mPosition.z + (pos.y * 16) + 3), mMovementController.get())));
+			for (int i = 0; i < 10; i++)
+			{
+				glm::ivec2 pos = mazeClearedTiles[randomNumber(3, mazeClearedTiles.size() - 1)];
+				spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(mPosition.x + (pos.x * 16) + 3, 0.0f, mPosition.z + (pos.y * 16) + 3), mMovementController.get())));
+			}
 		}
+		else { printf("[WARN] Dungeon generated with less than 3 cleared tiles!\n"); }
 
 		// add wave enter npc
 		//loadNPC(2, glm::vec3(cx - 3, 0, cz - 3));
@@ -6199,12 +6825,12 @@ void loadConfig()
 		printf("settings.ini not found. no configuration was loaded.\n");
 
 		// TODO: remove! TEMP, TESTING
-		playerInventoryItems.addItem(new Item(1000001));
-		playerInventoryItems.addItem(new Item(1000002));
-		playerInventoryItems.addItem(new Item(1000003));
-		playerInventoryItems.addItem(new Item(1000004));
-		playerInventoryItems.addItem(new Item(1000005));
-		playerInventoryItems.addItem(new Item(1000006));
+		playerInventoryItems.addItem(new Item(1492001));
+		playerInventoryItems.addItem(new Item(1492002));
+		playerInventoryItems.addItem(new Item(1492003));
+		playerInventoryItems.addItem(new Item(1492004));
+		playerInventoryItems.addItem(new Item(1492005));
+		playerInventoryItems.addItem(new Item(1492006));
 		playerInventoryItems.addItem(new Item(2000001, 1000));
 		playerInventoryItems.addItem(new Item(2000002, 1000));
 		playerInventoryItems.addItem(new Item(2100000, 100));
@@ -6231,7 +6857,7 @@ void loadConfig()
 
 	// items
 	for (unsigned int i = 0; i < (unsigned int)cfg.getInt("PlayerInventory", "itemCount"); i++) { playerInventoryItems.addItem(new Item(cfg.getInt("PlayerInventory", "item" + std::to_string(i)))); }
-	for (unsigned int i = 0; i < (unsigned int)cfg.getInt("PlayerEquipment", "itemCount"); i++) { playerEquipmentItems.push_back(cfg.getInt("PlayerEquipment", "item" + std::to_string(i))); }
+	for (unsigned int i = 0; i < (unsigned int)cfg.getInt("PlayerEquipment", "itemCount"); i++) { playerEquipmentItems.addItem(new Item(cfg.getInt("PlayerEquipment", "item" + std::to_string(i)))); }
 
 	// skills
 	for (unsigned int i = 0; i < (unsigned int)cfg.getInt("PlayerSkills", "itemCount"); i++)
@@ -6264,11 +6890,11 @@ void saveConfig()
 	cfg.setInt("Player", "level", playerLevel);
 
 	// items
-	// TODO: fix item saving!
+	// TODO: fix item saving and loading!
 	//cfg.setInt("PlayerInventory", "itemCount", playerInventoryItems.size());
 	//for (unsigned int i = 0; i < playerInventoryItems.size(); i++) { cfg.setInt("PlayerInventory", "item" + std::to_string(i), playerInventoryItems[i]); }
-	cfg.setInt("PlayerEquipment", "itemCount", playerEquipmentItems.size());
-	for (unsigned int i = 0; i < playerEquipmentItems.size(); i++) { cfg.setInt("PlayerEquipment", "item" + std::to_string(i), playerEquipmentItems[i]); }
+	//cfg.setInt("PlayerEquipment", "itemCount", playerEquipmentItems.size());
+	//for (unsigned int i = 0; i < playerEquipmentItems.size(); i++) { cfg.setInt("PlayerEquipment", "item" + std::to_string(i), playerEquipmentItems[i]); }
 
 	// skills
 	cfg.setInt("PlayerSkills", "itemCount", playerSkills.size());
@@ -6403,15 +7029,16 @@ void updateWaveTransition()
 class DroppedItem
 {
 private:
-	int mId;
+	std::unique_ptr<Item> mItem;
 	glm::vec3 mPosition;
 	long long mDropTime;
 
 public:
-	DroppedItem(int id, const glm::vec3& pos) : mId(id), mPosition(pos), mDropTime(Tools::currentTimeMillis()) {}
+	DroppedItem(int id, const glm::vec3& pos) : mItem(new Item(id)), mPosition(pos), mDropTime(Tools::currentTimeMillis()) {}
+	DroppedItem(Item* item, const glm::vec3& pos) : mItem(item), mPosition(pos), mDropTime(Tools::currentTimeMillis()) {}
 
 	const glm::vec3& getPosition() const { return mPosition; }
-	const int& getId() const { return mId; }
+	Item* releaseItem() { return mItem.release(); }
 
 	void draw()
 	{
@@ -6854,6 +7481,7 @@ void renderScene()
 	for (auto it = uiWindows.rbegin(); it != uiWindows.rend(); it++) { it->get()->onMouseMove(); }
 
 	updateClickSelectedItem();
+	updateClickSelectedKeybind();
 
 	// return to 3d drawing context
 	restorePerspectiveProjection();
@@ -6898,64 +7526,39 @@ void changeSize(int w, int h) {
 
 void attemptItemPickup()
 {
-	glm::vec3 playerPos(cx, 0.0f, cz);
+	glm::vec3 playerPos(cx, cy, cz);
 	for (auto it = droppedItems.begin(); it != droppedItems.end(); it++)
 	{
 		if (glm::distance(playerPos, it->get()->getPosition()) <= 1.0f)
 		{
-			playerInventoryItems.addItem(new Item(it->get()->getId()));
-			addInformationHistory("Picked up item (id " + std::to_string(it->get()->getId()) + ")");
+			Item* item = it->get()->releaseItem();
+			playerInventoryItems.addItem(item);
+			addInformationHistory("Picked up item (id " + std::to_string(item->getItemId()) + ")");
 			droppedItems.erase(it);
 			break;
 		}
 	}
 }
 
-#define GLUT_KEY_Q 113
-#define GLUT_KEY_W 119
-#define GLUT_KEY_E 101
-#define GLUT_KEY_R 114
-#define GLUT_KEY_I 105
-#define GLUT_KEY_A 97
-#define GLUT_KEY_S 115
-#define GLUT_KEY_D 100
-#define GLUT_KEY_Z 122
-#define GLUT_KEY_0 48
-#define GLUT_KEY_1 49
-#define GLUT_KEY_2 50
-#define GLUT_KEY_3 51
-#define GLUT_KEY_4 52
-#define GLUT_KEY_5 53
-#define GLUT_KEY_6 54
-#define GLUT_KEY_7 55
-#define GLUT_KEY_8 56
-#define GLUT_KEY_9 57
-#define GLUT_KEY_SPACEBAR 32
-#define GLUT_KEY_F 102
-#define GLUT_KEY_T 116
-#define GLUT_KEY_N 110
-#define GLUT_KEY_M 109
-
 void processNormalKeys(unsigned char key, int x, int y)
 {
 	printf("Normal key: %d\n", key);
 
+	auto keyIt = keybinds.find(key);
+	if (keyIt != keybinds.end())
+	{
+		if (keyIt->second.type == Keybinding::Type::INTERNAL)
+		{
+			getKeybindingActionById(keyIt->second.actionId)->func();
+		}
+	}
+
 	switch (key)
 	{
-	case GLUT_KEY_Q: toggleCameraMouseLock(); break;
 	case GLUT_KEY_W: moveCamForward = true; break;
 	case GLUT_KEY_A: charPos.x--; break;
 	case GLUT_KEY_S: moveCamBackward = true; break;
 	case GLUT_KEY_D: charPos.x++; break;
-	case GLUT_KEY_E: getUIWindowByTitle("Equipment")->setVisible(!getUIWindowByTitle("Equipment")->getVisible()); break;
-	case GLUT_KEY_I: getUIWindowByTitle("Inventory")->setVisible(!getUIWindowByTitle("Inventory")->getVisible()); break;
-	case GLUT_KEY_R: getUIWindowByTitle("Skills")->setVisible(!getUIWindowByTitle("Skills")->getVisible()); break;
-	case GLUT_KEY_Z: attemptItemPickup(); break;
-	case GLUT_KEY_SPACEBAR: playerJumpRequested = true; break;
-	case GLUT_KEY_F: getUIWindowByTitle("Keybinding")->setVisible(!getUIWindowByTitle("Keybinding")->getVisible()); break;
-	case GLUT_KEY_T: getUIWindowByTitle("World Map")->setVisible(!getUIWindowByTitle("World Map")->getVisible()); break;
-	case GLUT_KEY_N: voxelEditorModify(true); break;
-	case GLUT_KEY_M: voxelEditorModify(false); break;
 	}
 
 	// auto bind learned skills to number keys 1 - 9
@@ -7058,22 +7661,33 @@ void mouseButton(int button, int state, int x, int y)
 			}
 
 			// check UI window clicks
+			bool uiClicked = false;
 			for (auto it = uiWindows.rbegin(); it != uiWindows.rend(); it++)
 			{
 				UIWindow* window = it->get();
 
 				if (window->onClick(x, y))
 				{
+					uiClicked = true;
 					// last clicked window should be drawn last (front of z-order)
 					if (uiWindows.back().get() != window)
 					{
 						uiWindows.push_back(std::move(*it));
-						uiWindows.erase(std::next(it).base());
+						//uiWindows.erase(std::next(it).base()); // BUGGY!!
 					}
 					break;
 				}
 			}
+			for (auto it = uiWindows.begin(); it != uiWindows.end(); ) { if (!it->get()) { it = uiWindows.erase(it); } else { it++; } } // remove nullptr if z-ordering changed; stable
 			onDialogueWindowClick(x, y);
+
+			// drop clicked items if applicable
+			if (clickSelectedItem && !uiClicked)
+			{
+				clickSelectedItemInventory->releaseSlot(clickSelectedItem->getPosition());
+				droppedItems.push_back(std::unique_ptr<DroppedItem>(new DroppedItem(clickSelectedItem, glm::vec3(cx, cy, cz))));
+				clickSelectedItem = 0;
+			}
 
 			// check NPC clicks
 			for (unsigned int i = 0; i < loadedNPCs.size(); i++)
@@ -7191,12 +7805,12 @@ int main(int argc, char** argv)
 	playerEntity->addListener(wavePlayerListener.get());
 
 	// register skills
-	registerSkill(1000001, new RaycasterBasicAttackSkill());
-	registerSkill(1000002, new RaycasterPowerShotSkill());
-	registerSkill(1000003, new RaycasterBlastShotSkill());
-	registerSkill(1000004, new ChargeDashBasicSkill());
-	registerSkill(1000005, new ChargeDashRushSkill());
-	registerSkill(1000006, new ChargeDashSweepSkill());
+	registerSkill(1492001, new RaycasterBasicAttackSkill());
+	registerSkill(1492002, new RaycasterPowerShotSkill());
+	registerSkill(1492003, new RaycasterBlastShotSkill());
+	registerSkill(1492004, new ChargeDashBasicSkill());
+	registerSkill(1492005, new ChargeDashRushSkill());
+	registerSkill(1492006, new ChargeDashSweepSkill());
 
 	// register npcs
 	registerNPC(1, new TraderNPC());
@@ -7204,12 +7818,12 @@ int main(int argc, char** argv)
 	registerNPC(3, new BankNPC());
 
 	// register items
-	registerItem(1000001, new Item_BasicRaycaster());
-	registerItem(1000002, new Item_PowerRaycaster());
-	registerItem(1000003, new Item_BlastRaycaster());
-	registerItem(1000004, new Item_BasicCharger());
-	registerItem(1000005, new Item_PowerCharger());
-	registerItem(1000006, new Item_BlastCharger());
+	registerItem(1492001, new Item_BasicRaycaster());
+	registerItem(1492002, new Item_PowerRaycaster());
+	registerItem(1492003, new Item_BlastRaycaster());
+	registerItem(1492004, new Item_BasicCharger());
+	registerItem(1492005, new Item_PowerCharger());
+	registerItem(1492006, new Item_BlastCharger());
 	registerItem(2000001, new Item_RedPotion());
 	registerItem(2000002, new Item_BluePotion());
 	registerItem(2100000, new Item_ChunkClaimer());
@@ -7222,9 +7836,40 @@ int main(int argc, char** argv)
 	addUIWindow(new KeybindingWindow());
 	addUIWindow(new WorldMapWindow());
 	addUIWindow(new BankWindow());
+	addUIWindow(new CraftingWindow());
 	addUIWindow(new FuckYouWindow()); // what the flying fuck the ui system crashes on click of background windows (z-order swap part) if exactly 6 windows are registered
 
+	// load keybindings
 	initKeybindings();
+
+	registerKeybindingAction(1, "Mouse Lock", []() { toggleCameraMouseLock(); });
+	registerKeybindingAction(2, "Equip Window", []() { getUIWindowByTitle("Equipment")->setVisible(!getUIWindowByTitle("Equipment")->getVisible()); });
+	registerKeybindingAction(3, "Inv. Window", []() { getUIWindowByTitle("Inventory")->setVisible(!getUIWindowByTitle("Inventory")->getVisible()); });
+	registerKeybindingAction(4, "Skill Window", []() { getUIWindowByTitle("Skills")->setVisible(!getUIWindowByTitle("Skills")->getVisible()); });
+	registerKeybindingAction(5, "World Map", []() { getUIWindowByTitle("World Map")->setVisible(!getUIWindowByTitle("World Map")->getVisible()); });
+	registerKeybindingAction(6, "Craft Window", []() { getUIWindowByTitle("Crafting")->setVisible(!getUIWindowByTitle("Crafting")->getVisible()); });
+	registerKeybindingAction(7, "Keybnd Window", []() { getUIWindowByTitle("Keybinding")->setVisible(!getUIWindowByTitle("Keybinding")->getVisible()); });
+	registerKeybindingAction(101, "Item Pickup", []() { attemptItemPickup(); });
+	registerKeybindingAction(102, "Jump", []() { playerJumpRequested = true; });
+	registerKeybindingAction(103, "Place Voxel", []() { voxelEditorModify(true); });
+	registerKeybindingAction(104, "Remove Voxel", []() { voxelEditorModify(false); });
+
+	setKeybindingAction(GLUT_KEY_Q, Keybinding::Type::INTERNAL, 1);
+	setKeybindingAction(GLUT_KEY_E, Keybinding::Type::INTERNAL, 2);
+	setKeybindingAction(GLUT_KEY_I, Keybinding::Type::INTERNAL, 3);
+	setKeybindingAction(GLUT_KEY_R, Keybinding::Type::INTERNAL, 4);
+	setKeybindingAction(GLUT_KEY_T, Keybinding::Type::INTERNAL, 5);
+	setKeybindingAction(GLUT_KEY_X, Keybinding::Type::INTERNAL, 6);
+	setKeybindingAction(GLUT_KEY_F, Keybinding::Type::INTERNAL, 7);
+	setKeybindingAction(GLUT_KEY_Z, Keybinding::Type::INTERNAL, 101);
+	setKeybindingAction(GLUT_KEY_SPACEBAR, Keybinding::Type::INTERNAL, 102);
+	setKeybindingAction(GLUT_KEY_N, Keybinding::Type::INTERNAL, 103);
+	setKeybindingAction(GLUT_KEY_M, Keybinding::Type::INTERNAL, 104);
+
+	// load crafting recipes
+	CraftingRecipe* testRecipe = createCraftingRecipe(2100000, 1);
+	testRecipe->setIngredient(glm::ivec2(1, 1), 2000001, 1);
+	testRecipe->setIngredient(glm::ivec2(1, 2), 2000002, 1);
 
 	// load player config
 	loadConfig();
@@ -7260,14 +7905,15 @@ added land ownership (buildable) and wilderness (pvp + random dungeons) region b
 v5 (03/07/2020):
 voxel placing & destroying, land ownership, inventory item movement, banks
 
+v6 (01/08/2020):
+dropping inventory items, crafting, keybinding window, equipment window upgrades
+
 DONE BUT DISABLED:
 Maple map XML wz foothold and layout voxel mapping with depth expansion and dynamic noise, portals, switching maps, ropes/ladders (render only)
 
 NEXT:
-COMPLEXITY: biomes, crafting, wilderness town generation
-ITEM MANIP: held items, dropping inventory items, chests
-SKILLS: skill window icons, keybinding window
-EQUIPS: equipment window upgrades, equipment stat bonuses
+biomes, wilderness town generation, held items, chests, skill window icons, equipment stat bonuses
+inventory sorting, tree levels, recipe book, target location/object tracking
 
 SCALING: mob scaling, skill scaling, wave boss, dungeon difficulty multiplier
 CONTENT: more skills, potion tiers, crafting materials, mob drop diversity
