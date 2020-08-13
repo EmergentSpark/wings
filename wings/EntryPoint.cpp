@@ -31,6 +31,9 @@
 #include <glm/vec4.hpp>
 #include <glm/geometric.hpp>
 
+#include "XMLParser.hpp"
+#include "PerlinNoise.hpp"
+
 #pragma endregion
 
 #pragma region Graphics Engine
@@ -521,165 +524,6 @@ RaycastResult raycastWithDirection(VoxelVolume* volData, const glm::vec3& v3dSta
 	glm::vec3 v3dEnd = v3dStart + v3dDirectionAndLength;
 	return raycastWithEndpoints(volData, v3dStart, v3dEnd, callback);
 }
-
-#pragma endregion
-
-#pragma region XML Parser
-
-class XMLElement
-{
-public:
-	const std::string& getName() const { return mName; }
-	const std::string& getValue() const { return mValue; }
-	const bool hasAttribute(const std::string& name) const { return mAttributes.count(name); }
-	const std::string& getAttributeValue(const std::string& name) { return mAttributes[name]; }
-	XMLElement* getChildByIndex(unsigned int i) { return mChildren[i].get(); }
-	XMLElement* getChildByName(const std::string& name)
-	{
-		for (auto& child : mChildren) { if (child->getName() == name) { return child.get(); } }
-	}
-	const bool hasChild(const std::string& name) { return getChildByName(name) != 0; }
-
-	void setName(const std::string& name) { mName = name; }
-	void addAttribute(const std::string& name, const std::string& value) { mAttributes[name] = value; }
-	void addChild(XMLElement* element) { mChildren.push_back(std::unique_ptr<XMLElement>(element)); }
-
-	unsigned int getNumChildren() { return mChildren.size(); }
-	unsigned int getNumAttributes() { return mAttributes.size(); }
-
-private:
-	std::string mName;
-	std::string mValue;
-	std::unordered_map<std::string, std::string> mAttributes;
-	std::vector<std::unique_ptr<XMLElement>> mChildren;
-};
-
-class XMLParser
-{
-public:
-	static std::unique_ptr<XMLElement> load(const std::string& path) { return XMLParser().loadInternal(path); }
-
-private:
-	std::ifstream mFile;
-	char mCurrentChar;
-	std::vector<XMLElement*> mElementStack;
-
-	bool readNextChar() { if (mFile.bad() || mFile.eof()) { return false; } else { mFile.read(&mCurrentChar, 1); return true; } }
-
-	bool isSkippedWhitespaceChar() { return mCurrentChar == '\r' || mCurrentChar == '\n' || mCurrentChar == ' ' || mCurrentChar == '\t'; }
-
-	bool readElementAttributes(XMLElement* elem)
-	{
-		bool done = false;
-		bool readName = false;
-		std::stringstream name;
-		bool readingAttribs = false;
-		bool readingAttribName = false;
-		bool readingAttribValue = false;
-		std::stringstream attribName;
-		std::stringstream attribValue;
-
-		while (!done && readNextChar())
-		{
-			if (!readName)
-			{
-				if (mCurrentChar == ' ' || mCurrentChar == '>')
-				{
-					elem->setName(name.str());
-					readName = true;
-					if (mCurrentChar == ' ') { readingAttribs = true; readingAttribName = true; }
-					else if (mCurrentChar == '>') { mElementStack.push_back(elem); return true; }
-				}
-				else { name.put(mCurrentChar); }
-			}
-			else if (readingAttribs)
-			{
-				if (readingAttribName)
-				{
-					if (mCurrentChar == '/')
-					{
-						readNextChar(); // get the > out of the way
-						return false;
-					}
-					
-					if (mCurrentChar == '=')
-					{
-						readingAttribName = false;
-						readingAttribValue = true;
-						readNextChar();
-						if (mCurrentChar != '\"') { printf("WTF INVALID XML!!\n"); }
-					}
-					else { attribName.put(mCurrentChar); }
-				}
-				else if (readingAttribValue)
-				{
-					if (mCurrentChar == '\"')
-					{
-						readingAttribValue = false;
-						elem->addAttribute(attribName.str(), attribValue.str());
-						//printf("%s :: %s -> %s\n", elem->getName().c_str(), attribName.str().c_str(), attribValue.str().c_str());
-						attribName.str("");
-						attribValue.str("");
-					}
-					else { attribValue.put(mCurrentChar); }
-				}
-				else
-				{
-					// only valid chars at this point are ' ', a char for a new attrib, '/', or '>'
-					if (mCurrentChar == ' ') { readingAttribName = true; }
-					else if (mCurrentChar == '>') { mElementStack.push_back(elem); return true; }
-					else if (mCurrentChar == '/' || mCurrentChar == '?') { readNextChar(); return false; }
-				}
-			}
-		}
-
-		return false; // TODO: !!! wat!!
-	}
-
-	void readInnerElements(XMLElement* elem)
-	{
-		while (readNextChar())
-		{
-			if (isSkippedWhitespaceChar()) { continue; }
-
-			if (mCurrentChar == '<')
-			{
-				XMLElement* newElem = new XMLElement();
-				bool newScope = readElementAttributes(newElem);
-				if (newElem->getName() == "?xml")
-				{
-					delete newElem;
-					return;
-				}
-				if (newElem->getName()[0] == '/')
-				{
-					mElementStack.pop_back();
-					delete newElem;
-					return;
-				}
-				elem->addChild(newElem);
-				if (newScope) { readInnerElements(newElem); }
-			}
-		}
-	}
-
-	std::unique_ptr<XMLElement> loadInternal(const std::string& path)
-	{
-		std::unique_ptr<XMLElement> document(new XMLElement());
-
-		mFile.open(path);
-
-		printf("Loading XML DOM for %s\n", path.c_str());
-
-		while (mFile.good() && !mFile.eof()) { readInnerElements(document.get()); }
-
-		mFile.close();
-
-		printf("Loaded XML document with %d children.\n", document->getChildByIndex(0)->getNumChildren());
-
-		return document;
-	}
-};
 
 #pragma endregion
 
@@ -2693,6 +2537,15 @@ void moveCamera(float direction, float speed)
 	cz += lz * speed * direction;
 }
 
+void moveCameraX(float direction, float speed)
+{
+	if (direction == 0.0f) { return; } // only process if there's movement to handle
+
+	float dirMod = 1.5708f * direction; // +/- 90 degrees
+	cx += sinf(deltaAngle + dirMod) * speed;
+	cz += -cosf(deltaAngle + dirMod) * speed;
+}
+
 void updateCamera(float elapsed)
 {
 	if (camMouseLocked)
@@ -2716,9 +2569,13 @@ void updateCamera(float elapsed)
 	}
 
 	float moveCamZ = 0.0f;
+	float moveCamX = 0.0f;
 	if (moveCamForward) { moveCamZ++; }
 	if (moveCamBackward) { moveCamZ--; }
+	if (moveCamRight) { moveCamX++; }
+	if (moveCamLeft) { moveCamX--; }
 	moveCamera(moveCamZ, elapsed * 10.0f);
+	moveCameraX(moveCamX, elapsed * 10.0f);
 }
 
 void toggleCameraMouseLock()
@@ -2855,6 +2712,8 @@ void setVoxel(int x, int y, int z, unsigned char r, unsigned char g, unsigned ch
 }
 
 void setVoxel(int x, int y, int z, unsigned char r, unsigned char g, unsigned char b) { setVoxel(x, y, z, r, g, b, 255); }
+
+void setVoxel(int x, int y, int z, const glm::ivec3& clr) { setVoxel(x, y, z, clr.r, clr.g, clr.b); }
 
 const VoxelType& getVoxel(int x, int y, int z)
 {
@@ -3376,6 +3235,7 @@ public:
 	const std::string& getName() const { return mName; }
 
 	virtual void attemptCast() = 0;
+	virtual void drawIcon() = 0;
 };
 
 std::unordered_map<int, std::unique_ptr<ICombatSkill>> loadedSkills;
@@ -4007,6 +3867,19 @@ void playerSkillGainExp(int id, int exp)
 			break;
 		}
 	}
+}
+
+LearnedSkill* getPlayerLearnedSkillById(int id)
+{
+	for (unsigned int i = 0; i < playerSkills.size(); i++)
+	{
+		if (playerSkills[i]->getId() == id)
+		{
+			return playerSkills[i].get();
+		}
+	}
+
+	return 0;
 }
 
 #pragma endregion
@@ -4868,6 +4741,20 @@ public:
 	EquipmentWindow() : UIWindow(glm::ivec2(495, 95), glm::ivec2(330, 500), "Equipment") {}
 };
 
+LearnedSkill* clickSelectedSkill = 0;
+
+void updateClickSelectedSkill()
+{
+	if (clickSelectedSkill)
+	{
+		ICombatSkill* skillInfo = loadedSkills[clickSelectedSkill->getId()].get();
+		glPushMatrix();
+		glTranslatef((float)currentMousePos.x + 5, (float)currentMousePos.y + 5, 0);
+		skillInfo->drawIcon();
+		glPopMatrix();
+	}
+}
+
 class SkillsWindow : public UIWindow
 {
 protected:
@@ -4875,17 +4762,50 @@ protected:
 	{
 		for (unsigned int i = 0; i < playerSkills.size(); i++)
 		{
-			LearnedSkill* sInfo = playerSkills[i].get();
+			LearnedSkill* charSkill = playerSkills[i].get();
+			ICombatSkill* skillInfo = loadedSkills[charSkill->getId()].get();
 
-			int y = 5 + (i * 29);
+			int y = 5 + (i * 52);
 
+			// icon background tile first
+			glColor4f(0.0f, 0.0f, 0.0f, 0.50f);
+			quad(5, y, 48, 48);
+			// draw icon
+			glPushMatrix();
+			glTranslatef(5.0f, (float)y, 0.0f);
+			skillInfo->drawIcon();
+			glPopMatrix();
+			// draw info
 			glColor4f(0.0f, 1.0f, 0.0f, 0.2f);
-			quad(5, y, 375, 25);
+			quad(55, y, 325, 48);
 			glColor4f(0.0f, 1.0f, 0.0f, 0.8f);
-			quad(5, y, calcProgressWidth(sInfo->getExp(), sInfo->getLevelUpExp(), 375), 25);
+			quad(55, y, calcProgressWidth(charSkill->getExp(), charSkill->getLevelUpExp(), 325), 48);
 			glColor3f(0.0f, 0.0f, 0.0f);
-			text(5, y + 20, GLUT_BITMAP_HELVETICA_18, loadedSkills[sInfo->getId()]->getName());
-			text(225, y + 20, GLUT_BITMAP_HELVETICA_18, "Lv. " + std::to_string(sInfo->getLevel()) + " (" + std::to_string(sInfo->getExp()) + " / " + std::to_string(sInfo->getLevelUpExp()) + ")");
+			text(55, y + 20, GLUT_BITMAP_HELVETICA_18, skillInfo->getName());
+			text(100, y + 40, GLUT_BITMAP_HELVETICA_12, "Lv. " + std::to_string(charSkill->getLevel()) + " (" + std::to_string(charSkill->getExp()) + " / " + std::to_string(charSkill->getLevelUpExp()) + ")");
+		}
+	}
+
+	virtual void click(int x, int y)
+	{
+		glm::ivec2 curPos(x, y);
+
+		for (unsigned int i = 0; i < playerSkills.size(); i++)
+		{
+			LearnedSkill* charSkill = playerSkills[i].get();
+
+			int y = 5 + (i * 52);
+
+			glm::ivec2 low(5, y);
+			glm::ivec2 high(low.x + 48, low.y + 48);
+
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				addInformationHistory("Click on skill slot " + std::to_string(i + 1));
+				if (clickSelectedSkill == charSkill) { clickSelectedSkill = 0; }
+				else { clickSelectedSkill = charSkill; }
+				break;
+			}
 		}
 	}
 
@@ -5078,6 +4998,24 @@ void setKeybindingAction(int keycode, Keybinding::Type type, int actionId)
 	}
 }
 
+Keybinding* getKeybindingBySkillId(int skillId)
+{
+	for (auto& keybind : keybinds)
+	{
+		if (keybind.second.type == Keybinding::Type::SKILL && keybind.second.actionId == skillId) { return &keybind.second; }
+	}
+	return 0;
+}
+
+Keybinding* getKeybindingByItemId(int itemId)
+{
+	for (auto& keybind : keybinds)
+	{
+		if (keybind.second.type == Keybinding::Type::ITEM && keybind.second.actionId == itemId) { return &keybind.second; }
+	}
+	return 0;
+}
+
 KeybindingAction* clickSelectedKeybind = 0;
 
 void updateClickSelectedKeybind()
@@ -5106,17 +5044,43 @@ protected:
 			glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
 			quad(keybind.second.position.x, keybind.second.position.y, keybind.second.size.x, keybind.second.size.y);
 			
-			if (keybind.second.type == Keybinding::Type::INTERNAL)
+			if (keybind.second.type == Keybinding::Type::INTERNAL) // bound internal actions
 			{
 				KeybindingAction* action = getKeybindingActionById(keybind.second.actionId);
+				// deeper background
 				glColor4f(0.5f, 0.5f, 0.5f, 0.75f);
 				quad(keybind.second.position.x, keybind.second.position.y, keybind.second.size.x, keybind.second.size.y);
+				// action text
 				glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
 				std::vector<std::string> parts = Tools::StringUtil::explode(action->name, ' ');
 				for (unsigned int i = 0; i < parts.size(); i++)
 				{
 					text(keybind.second.position.x, 15 + keybind.second.position.y + (i * 14), GLUT_BITMAP_8_BY_13, parts[i]);
 				}
+			}
+			else if (keybind.second.type == Keybinding::Type::SKILL) // bound skills
+			{
+				ICombatSkill* skillInfo = loadedSkills[keybind.second.actionId].get();
+				// deeper background
+				glColor4f(0.5f, 0.5f, 0.5f, 0.75f);
+				quad(keybind.second.position.x, keybind.second.position.y, keybind.second.size.x, keybind.second.size.y);
+				// skill icon
+				glPushMatrix();
+				glTranslatef((float)keybind.second.position.x, (float)keybind.second.position.y, 0);
+				skillInfo->drawIcon();
+				glPopMatrix();
+			}
+			else if (keybind.second.type == Keybinding::Type::ITEM) // bound items
+			{
+				ItemInfo* itemInfo = getItemInfo(keybind.second.actionId);
+				// deeper background
+				glColor4f(0.5f, 0.5f, 0.5f, 0.75f);
+				quad(keybind.second.position.x, keybind.second.position.y, keybind.second.size.x, keybind.second.size.y);
+				// skill icon
+				glPushMatrix();
+				glTranslatef((float)keybind.second.position.x, (float)keybind.second.position.y, 0);
+				itemInfo->drawIcon();
+				glPopMatrix();
 			}
 
 			glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
@@ -5141,7 +5105,6 @@ protected:
 			{
 				text(10 + (col * 52), 330 + 15 + (row * 52) + (ii * 14), GLUT_BITMAP_8_BY_13, parts[ii]);
 			}
-			
 		}
 	}
 
@@ -5157,14 +5120,37 @@ protected:
 
 			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
 			{
-				if (!clickSelectedKeybind && keybind.second.type == Keybinding::Type::INTERNAL)
+				if (!clickSelectedKeybind && keybind.second.type == Keybinding::Type::INTERNAL && !clickSelectedSkill && !clickSelectedItem) // pick up internal binding
 				{
 					clickSelectedKeybind = getKeybindingActionById(keybind.second.actionId);
 				}
-				else if (clickSelectedKeybind)
+				else if (!clickSelectedSkill && keybind.second.type == Keybinding::Type::SKILL && !clickSelectedKeybind && !clickSelectedItem) // pick up skill binding
+				{
+					clickSelectedSkill = getPlayerLearnedSkillById(keybind.second.actionId);
+					setKeybindingAction(keybind.first, Keybinding::Type::UNASSIGNED, 0);
+				}
+				else if (clickSelectedKeybind) // place internal binding
 				{
 					setKeybindingAction(keybind.second.keycode, Keybinding::Type::INTERNAL, clickSelectedKeybind->id);
 					clickSelectedKeybind = 0;
+				}
+				else if (clickSelectedSkill) // place skill binding
+				{
+					// remove existing bind for skill if present
+					Keybinding* existingBind = getKeybindingBySkillId(clickSelectedSkill->getId());
+					if (existingBind) { setKeybindingAction(existingBind->keycode, Keybinding::Type::UNASSIGNED, 0); }
+					// assign new binding
+					setKeybindingAction(keybind.second.keycode, Keybinding::Type::SKILL, clickSelectedSkill->getId());
+					clickSelectedSkill = 0;
+				}
+				else if (clickSelectedItem) // place item binding
+				{
+					// remove existing bind for item if present
+					Keybinding* existingBind = getKeybindingByItemId(clickSelectedItem->getItemId());
+					if (existingBind) { setKeybindingAction(existingBind->keycode, Keybinding::Type::UNASSIGNED, 0); }
+					// assign new binding
+					setKeybindingAction(keybind.second.keycode, Keybinding::Type::ITEM, clickSelectedItem->getItemId());
+					clickSelectedItem = 0;
 				}
 
 				addInformationHistory("Click on keybind " + std::to_string(keybind.second.keycode));
@@ -5943,6 +5929,12 @@ public:
 	RaycasterBasicAttackSkill() : ICombatSkill("Raycast Mastery") {}
 
 	virtual void attemptCast() { shootRaycaster(0); }
+
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(225));
+		drawQuad2D(11, 15, 8, 19);
+	}
 };
 
 class RaycasterPowerShotSkill : public ICombatSkill
@@ -5951,6 +5943,12 @@ public:
 	RaycasterPowerShotSkill() : ICombatSkill("Raycast Power Shot") {}
 
 	virtual void attemptCast() { shootRaycaster(1); }
+
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(25), BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(201));
+		drawQuad2D(11, 15, 8, 19);
+	}
 };
 
 class RaycasterBlastShotSkill : public ICombatSkill
@@ -5959,6 +5957,12 @@ public:
 	RaycasterBlastShotSkill() : ICombatSkill("Raycast Blast Shot") {}
 
 	virtual void attemptCast() { shootRaycaster(2); }
+
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(79), BYTE_TO_FLOAT_COLOR(56));
+		drawQuad2D(11, 15, 8, 19);
+	}
 };
 
 class ChargeDash : public ISkillEffect
@@ -6051,6 +6055,13 @@ public:
 	ChargeDashBasicSkill() : ICombatSkill("Charge Dash (Basic)") {}
 
 	virtual void attemptCast() { startChargeDash(1); }
+
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(225));
+		drawQuad2D(11, 15, 8, 19);
+		drawQuad2D(19, 15, 19, 8);
+	}
 };
 
 class ChargeDashRushSkill : public ICombatSkill
@@ -6059,6 +6070,13 @@ public:
 	ChargeDashRushSkill() : ICombatSkill("Charge Dash (Rush)") {}
 
 	virtual void attemptCast() { startChargeDash(2); }
+
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(25), BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(201));
+		drawQuad2D(11, 15, 8, 19);
+		drawQuad2D(19, 15, 19, 8);
+	}
 };
 
 class ChargeDashSweepSkill : public ICombatSkill
@@ -6067,6 +6085,13 @@ public:
 	ChargeDashSweepSkill() : ICombatSkill("Charge Dash (Sweep)") {}
 
 	virtual void attemptCast() { startChargeDash(3); }
+
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(79), BYTE_TO_FLOAT_COLOR(56));
+		drawQuad2D(11, 15, 8, 19);
+		drawQuad2D(19, 15, 19, 8);
+	}
 };
 
 #pragma endregion
@@ -6142,80 +6167,78 @@ void unloadNPC(int id)
 
 #pragma region Terrain Generation
 
-// Improved Perlin Noise. https://cs.nyu.edu/~perlin/noise/
-class PerlinNoise
-{
-public:
-	PerlinNoise()
-	{
-		int permutation[] = { 151,160,137,91,90,15,
-			131,13,201,95,96,53,194,233,7,225,140,36,103,30,69,142,8,99,37,240,21,10,23,
-			190, 6,148,247,120,234,75,0,26,197,62,94,252,219,203,117,35,11,32,57,177,33,
-			88,237,149,56,87,174,20,125,136,171,168, 68,175,74,165,71,134,139,48,27,166,
-			77,146,158,231,83,111,229,122,60,211,133,230,220,105,92,41,55,46,245,40,244,
-			102,143,54, 65,25,63,161, 1,216,80,73,209,76,132,187,208, 89,18,169,200,196,
-			135,130,116,188,159,86,164,100,109,198,173,186, 3,64,52,217,226,250,124,123,
-			5,202,38,147,118,126,255,82,85,212,207,206,59,227,47,16,58,17,182,189,28,42,
-			223,183,170,213,119,248,152, 2,44,154,163, 70,221,153,101,155,167, 43,172,9,
-			129,22,39,253, 19,98,108,110,79,113,224,232,178,185, 112,104,218,246,97,228,
-			251,34,242,193,238,210,144,12,191,179,162,241, 81,51,145,235,249,14,239,107,
-			49,192,214, 31,181,199,106,157,184, 84,204,176,115,121,50,45,127, 4,150,254,
-			138,236,205,93,222,114,67,29,24,72,243,141,128,195,78,66,215,61,156,180
-		};
-
-		for (int i = 0; i < 256; i++) p[256 + i] = p[i] = permutation[i];
-	}
-
-	double noise(double x, double y, double z) {
-		int X = (int)std::floor(x) & 255,                  // FIND UNIT CUBE THAT
-			Y = (int)std::floor(y) & 255,                  // CONTAINS POINT.
-			Z = (int)std::floor(z) & 255;
-		x -= std::floor(x);                                // FIND RELATIVE X,Y,Z
-		y -= std::floor(y);                                // OF POINT IN CUBE.
-		z -= std::floor(z);
-		double u = fade(x),                                // COMPUTE FADE CURVES
-			v = fade(y),                                // FOR EACH OF X,Y,Z.
-			w = fade(z);
-		int A = p[X] + Y, AA = p[A] + Z, AB = p[A + 1] + Z,      // HASH COORDINATES OF
-			B = p[X + 1] + Y, BA = p[B] + Z, BB = p[B + 1] + Z;      // THE 8 CUBE CORNERS,
-
-		return lerp(w, lerp(v, lerp(u, grad(p[AA], x, y, z),  // AND ADD
-			grad(p[BA], x - 1, y, z)), // BLENDED
-			lerp(u, grad(p[AB], x, y - 1, z),  // RESULTS
-				grad(p[BB], x - 1, y - 1, z))),// FROM  8
-			lerp(v, lerp(u, grad(p[AA + 1], x, y, z - 1),  // CORNERS
-				grad(p[BA + 1], x - 1, y, z - 1)), // OF CUBE
-				lerp(u, grad(p[AB + 1], x, y - 1, z - 1),
-					grad(p[BB + 1], x - 1, y - 1, z - 1))));
-	}
-
-private:
-	static double fade(double t) { return t * t * t * (t * (t * 6 - 15) + 10); }
-	static double lerp(double t, double a, double b) { return a + t * (b - a); }
-	static double grad(int hash, double x, double y, double z) {
-		int h = hash & 15;                      // CONVERT LO 4 BITS OF HASH CODE
-		double u = h < 8 ? x : y,                 // INTO 12 GRADIENT DIRECTIONS.
-			v = h < 4 ? y : h == 12 || h == 14 ? x : z;
-		return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
-	}
-
-	int p[512];
-};
-
 PerlinNoise noise;
 
 bool operator >= (const glm::ivec3& v1, const glm::ivec3& v2) { return v1.x >= v2.x && v1.y >= v2.y && v1.z >= v2.z; }
 bool operator <= (const glm::ivec3& v1, const glm::ivec3& v2) { return v1.x <= v2.x && v1.y <= v2.y && v1.z <= v2.z; }
 
+// i think the effected chunks system should be designed a little better and this should extend a multi-purpose chunk modifier class or something, but it works
 class TerrainTree
 {
 private:
 	glm::ivec3 position;
 	int height;
 	glm::ivec3 shape;
+	int levels;
+	enum class Type
+	{
+		OAK, // light green leaves, light brown trunk
+		BIRCH, // light green leaves, white trunk
+		SPRUCE, // dark green leaves, dark brown trunk
+		JUNGLE // medium green leaves, yellow-brown trunk
+	};
+	Type type;
 	std::vector<glm::ivec3> effectedChunks;
 	std::vector<glm::ivec3> loadedChunks;
 	std::vector<glm::ivec3> unloadedChunks;
+
+	glm::ivec3 getTrunkColor()
+	{
+		glm::ivec3 trunkColor;
+		if (type == Type::OAK)
+		{
+			trunkColor.r = 137;
+			trunkColor.g = getRandomInt(30, 90);
+			trunkColor.b = 0;
+		}
+		else if (type == Type::BIRCH)
+		{
+			trunkColor.r = getRandomInt(110, 130);
+			trunkColor.g = getRandomInt(110, 130);
+			trunkColor.b = getRandomInt(110, 130);
+		}
+		else if (type == Type::SPRUCE)
+		{
+			trunkColor.r = 127;
+			trunkColor.g = getRandomInt(15, 50);
+			trunkColor.b = 25;
+		}
+		return trunkColor;
+	}
+
+	glm::ivec3 getLeavesColor()
+	{
+		glm::ivec3 leavesColor;
+		if (type == Type::OAK)
+		{
+			leavesColor.r = getRandomInt(100, 135);
+			leavesColor.g = getRandomInt(100, 135);
+			leavesColor.b = 0;
+		}
+		else if (type == Type::BIRCH)
+		{
+			leavesColor.r = getRandomInt(140, 165);
+			leavesColor.g = getRandomInt(140, 165);
+			leavesColor.b = 0;
+		}
+		else if (type == Type::SPRUCE)
+		{
+			leavesColor.r = getRandomInt(50, 80);
+			leavesColor.g = getRandomInt(50, 80);
+			leavesColor.b = 0;
+		}
+		return leavesColor;
+	}
 
 public:
 	TerrainTree(int x, int y, int z)
@@ -6223,16 +6246,21 @@ public:
 		position = glm::ivec3(x, y, z);
 		height = getRandomInt(4, 8);
 		shape = glm::ivec3(getRandomInt(2, 7), getRandomInt(1, height / 2), getRandomInt(2, 7));
+		levels = getRandomInt(1, 4);
+		type = (Type)getRandomInt(0, 2); // don't use jungle for now
 
 		// calculate relevant chunks
 		glm::ivec3 chunkStart(getVoxelChunkPos(x, y, z));
 		// TODO: this technically doesn't consider x/z offsets on y axis when height overflows. invisible because of current usage contexts
 		effectedChunks.push_back(chunkStart);
 		//if (position.y + height + shape.y > chunkStart.y + 16) { effectedChunks.push_back(glm::ivec3(x, y + 1, z)); }
-		if (position.x - shape.x < chunkStart.x) { effectedChunks.push_back(glm::ivec3(chunkStart.x - 1, chunkStart.y, chunkStart.z)); }
-		if (position.x + shape.x > chunkStart.x + 16) { effectedChunks.push_back(glm::ivec3(chunkStart.x + 1, chunkStart.y, chunkStart.z)); }
-		if (position.z - shape.z < chunkStart.z) { effectedChunks.push_back(glm::ivec3(chunkStart.x, chunkStart.y, chunkStart.z - 1)); }
-		if (position.z + shape.z > chunkStart.z + 16) { effectedChunks.push_back(glm::ivec3(chunkStart.x, chunkStart.y, chunkStart.z + 1)); }
+		for (int i = 0; i < levels; i++) // not exactly perfect, but overshooting it a little is ok, undershooting it means malformation
+		{
+			if (position.x - shape.x < chunkStart.x) { effectedChunks.push_back(glm::ivec3(chunkStart.x - 1, chunkStart.y + i, chunkStart.z)); }
+			if (position.x + shape.x > chunkStart.x + 16) { effectedChunks.push_back(glm::ivec3(chunkStart.x + 1, chunkStart.y + i, chunkStart.z)); }
+			if (position.z - shape.z < chunkStart.z) { effectedChunks.push_back(glm::ivec3(chunkStart.x, chunkStart.y + i, chunkStart.z - 1)); }
+			if (position.z + shape.z > chunkStart.z + 16) { effectedChunks.push_back(glm::ivec3(chunkStart.x, chunkStart.y + i, chunkStart.z + 1)); }
+		}
 		
 		// mark all effected chunks as unloaded
 		for (auto it : effectedChunks) { unloadedChunks.push_back(it); }
@@ -6263,21 +6291,25 @@ public:
 		// trunk
 		if (position >= chunkStart && position <= chunkEnd)
 		{
-			for (int i = 0; i < height; i++) { setVoxel(position.x, position.y + i, position.z, 137, getRandomInt(30, 90), 0); }
+			for (int i = 0; i < height; i++) { setVoxel(position.x, position.y + i, position.z, getTrunkColor()); }
 		}
 		// leaves
-		for (int xx = position.x - shape.x; xx <= position.x + shape.x; xx++)
+		for (int ll = 0; ll < levels; ll++)
 		{
-			for (int yy = position.y - shape.y; yy <= position.y + shape.y; yy++)
+			int tier = ll + 1;
+			for (int xx = position.x - (shape.x / tier); xx <= position.x + (shape.x / tier); xx++)
 			{
-				for (int zz = position.z - shape.z; zz <= position.z + shape.z; zz++)
+				for (int yy = position.y - shape.y; yy <= position.y + shape.y; yy++)
 				{
-					glm::ivec3 curPos(xx, yy, zz);
-					if (curPos >= chunkStart && curPos <= chunkEnd)
+					for (int zz = position.z - (shape.z / tier); zz <= position.z + (shape.z / tier); zz++)
 					{
-						if (getRandomInt(1, 10) >= 3)
+						glm::ivec3 curPos(xx, yy, zz);
+						if (curPos >= chunkStart && curPos <= chunkEnd)
 						{
-							setVoxel(xx, yy + height, zz, getRandomInt(100, 135), getRandomInt(100, 135), 0);
+							if (getRandomInt(1, 10) >= 3)
+							{
+								setVoxel(curPos.x, curPos.y + height + (shape.y * ll * 2), curPos.z, getLeavesColor());
+							}
 						}
 					}
 				}
@@ -7482,6 +7514,7 @@ void renderScene()
 
 	updateClickSelectedItem();
 	updateClickSelectedKeybind();
+	updateClickSelectedSkill();
 
 	// return to 3d drawing context
 	restorePerspectiveProjection();
@@ -7547,21 +7580,28 @@ void processNormalKeys(unsigned char key, int x, int y)
 	auto keyIt = keybinds.find(key);
 	if (keyIt != keybinds.end())
 	{
-		if (keyIt->second.type == Keybinding::Type::INTERNAL)
+		if (keyIt->second.type == Keybinding::Type::INTERNAL) { getKeybindingActionById(keyIt->second.actionId)->func(); }
+		else if (keyIt->second.type == Keybinding::Type::SKILL) { loadedSkills[keyIt->second.actionId]->attemptCast(); }
+		else if (keyIt->second.type == Keybinding::Type::ITEM)
 		{
-			getKeybindingActionById(keyIt->second.actionId)->func();
+			Item* item = playerInventoryItems.findById(keyIt->second.actionId);
+			if (item) // make sure player has at least 1 of the item in their inventory to use
+			{
+				getItemInfo(item->getItemId())->onUse();
+				playerInventoryItems.removeItem(item->getPosition());
+			}
 		}
 	}
 
 	switch (key)
 	{
 	case GLUT_KEY_W: moveCamForward = true; break;
-	case GLUT_KEY_A: charPos.x--; break;
 	case GLUT_KEY_S: moveCamBackward = true; break;
-	case GLUT_KEY_D: charPos.x++; break;
+	case GLUT_KEY_A: moveCamLeft = true; break;
+	case GLUT_KEY_D: moveCamRight = true; break;
 	}
 
-	// auto bind learned skills to number keys 1 - 9
+	// TODO: temporary development measure, remove! | auto bind learned skills to number keys 1 - 9
 	if (key >= GLUT_KEY_1 && key <= GLUT_KEY_9)
 	{
 		int skillIndex = key - GLUT_KEY_1;
@@ -7585,6 +7625,8 @@ void processNormalKeysUp(unsigned char key, int x, int y) {
 	{
 	case GLUT_KEY_W: moveCamForward = false; break;
 	case GLUT_KEY_S: moveCamBackward = false; break;
+	case GLUT_KEY_A: moveCamLeft = false; break;
+	case GLUT_KEY_D: moveCamRight = false; break;
 	}
 }
 
@@ -7883,45 +7925,3 @@ int main(int argc, char** argv)
 
 	return 1;
 }
-
-/*
-v1 (11/06/2020):
-mob spawns, basic mob movement, dealing damage, NPCs, death, waves, shops, inventory, equipment, skills, NPC dialogues, stat calculations,
-player and mob skills, voxel engine core, player stat regen, maze generation
-
-v2 (16/06/2020):
-a* pathfinding on mobs, voxel terrain physics, jumping
-
-v3 (18/06/2020):
-3 new skills, inventory system upgrades (icon size increased, icon visuals added, tooltips w/ name and description, item stacking),
-hp and mp pots, volume surface extraction multithreaded, ui system upgrades (window dragging, universal closing, z-ordering),
-terrain generation upgrades (perlin, dungeons, trees), mob pathfinding and configuration loading temporarily disabled
-
-v4 (24/06/2020):
-dungeon exit constraints and wave initialization functional, mob pathfinding fixed and re-enabled, added world map window, added portals
-improved dungeon chunk loading performance, fixed tree generation & applied it globally, added towns & training grounds (basic)
-added land ownership (buildable) and wilderness (pvp + random dungeons) region boundaries (basic)
-
-v5 (03/07/2020):
-voxel placing & destroying, land ownership, inventory item movement, banks
-
-v6 (01/08/2020):
-dropping inventory items, crafting, keybinding window, equipment window upgrades
-
-DONE BUT DISABLED:
-Maple map XML wz foothold and layout voxel mapping with depth expansion and dynamic noise, portals, switching maps, ropes/ladders (render only)
-
-NEXT:
-biomes, wilderness town generation, held items, chests, skill window icons, equipment stat bonuses
-inventory sorting, tree levels, recipe book, target location/object tracking
-
-SCALING: mob scaling, skill scaling, wave boss, dungeon difficulty multiplier
-CONTENT: more skills, potion tiers, crafting materials, mob drop diversity
-POLISH: tutorial, graphics optimizations, networking, buddies, parties, guilds
-
-TENTATIVE TODO:
-Map biome, noise, and XML wz mapping and depth expansion generation upgrades
-Equipment and item voxel mapping generation & UI windows
-Improve combat item and skill support, improve mob support
-Map regeneration, mob stat regen
-*/

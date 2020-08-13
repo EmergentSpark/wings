@@ -1,0 +1,11 @@
+# Extentions
+*.iobj
+*.ipdb
+*.pdb
+
+# Directories
+/wings/Release/
+/.vs/
+
+# Files
+Release/settings.ini

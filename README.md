@@ -5,6 +5,7 @@ I'll get to writing this soon.
 * Project configuration files are supplied for Visual Studio 2019. You shouldn't encounter any problems compiling.
 * Both Debug and Release versions link against Release library binaries.
 * No external resource dependencies.
+* Assumes 1920 x 1080 resolution.
 * Uses OpenGL 1.1 so would gain a considerable performance boost if upgraded to more modern pipeline code.
 
 # About

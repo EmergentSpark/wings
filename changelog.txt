@@ -1,0 +1,52 @@
+v1 (11/06/2020):
+mob spawns, basic mob movement, dealing damage, NPCs, death, waves, shops, inventory, equipment, skills, NPC dialogues, stat calculations,
+player and mob skills, voxel engine core, player stat regen, maze generation
+
+v2 (16/06/2020):
+a* pathfinding on mobs, voxel terrain physics, jumping
+
+v3 (18/06/2020):
+3 new skills, inventory system upgrades (icon size increased, icon visuals added, tooltips w/ name and description, item stacking),
+hp and mp pots, volume surface extraction multithreaded, ui system upgrades (window dragging, universal closing, z-ordering),
+terrain generation upgrades (perlin, dungeons, trees), mob pathfinding and configuration loading temporarily disabled
+
+v4 (24/06/2020):
+dungeon exit constraints and wave initialization functional, mob pathfinding fixed and re-enabled, added world map window, added portals
+improved dungeon chunk loading performance, fixed tree generation & applied it globally, added towns & training grounds (basic)
+added land ownership (buildable) and wilderness (pvp + random dungeons) region boundaries (basic)
+
+v5 (03/07/2020):
+voxel placing & destroying, land ownership, inventory item movement, banks
+
+v6 (01/08/2020):
+dropping inventory items, crafting, keybinding window, equipment window upgrades
+
+v7 (13/08/2020):
+left/right strafing, skill window icons, keybinding skills, keybinding items, tree levels & diversity
+
+DONE BUT DISABLED:
+Maple map XML wz foothold and layout voxel mapping with depth expansion and dynamic noise, portals, switching maps, ropes/ladders (render only)
+
+CORE TODO:
+aug 14 - biomes, equipment stat bonuses, a few more mobs, different dungeon themes
+aug 15 - mob scaling, wave boss, dungeon difficulty multiplier, mob drop diversity
+aug 16 - buildable area terrain specialization, wilderness area terrain specialization
+aug 17 - periodic random wilderness town spawns, wilderness terrain periodic regeneration
+aug 18 - potion tiers (refer to maple), a few more more skills, skill scaling
+aug 19 - expand base town set structure and content, add mob towers w/ level tiers (progression & growth mechanics up to very high lvls)
+aug 20 - land ownership expansion, land ownership expiration, land ownership duration extension
+aug 21 - buffs, debuffs, stunning, snaring, slowing, mob stat regen
+
+BONUS TODO:
+aug 22 - inventory sorting, target location/object tracking
+aug 23 - tutorial npc
+aug 24 - minecraft texture pack support
+aug 25 - add many crafting materials, add many recipes (from minecraft), recipe book
+aug 26 - held items, chests
+aug 27 - currency, selling items to npc shops, player shops
+aug 28 - third person camera, character visual display, equipment physical display on character
+
+OTHER STUFF:
+graphics optimizations, networking, buddies, parties, guilds
+Map biome, noise, and XML wz mapping and depth expansion generation upgrades
+Equipment and item voxel mapping generation & UI windows
