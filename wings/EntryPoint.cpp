@@ -3252,12 +3252,47 @@ public:
 
 class CombatEntity
 {
+private:
+	int mHP;
+	int mMP;
+
+	int mMaxHP;
+	int mMaxMP;
+	int mAttackDamage;
+	float mMoveSpeed;
+
+	int mBonusMaxHP = 0;
+	int mBonusMaxMP = 0;
+	int mBonusAttackDamage = 0;
+	float mBonusMoveSpeed = 0.0f;
+
+	int mTrueMaxHP;
+	int mTrueMaxMP;
+	int mTrueAttackDamage;
+	float mTrueMoveSpeed;
+
+	void recalcMaxHP() { mTrueMaxHP = mMaxHP + mBonusMaxHP; }
+	void recalcMaxMP() { mTrueMaxMP = mMaxMP + mBonusMaxMP; }
+	void recalcAttackDamage() { mTrueAttackDamage = mAttackDamage + mBonusAttackDamage; }
+	void recalcMoveSpeed() { mTrueMoveSpeed = mMoveSpeed + mBonusMoveSpeed; }
+
 protected:
 	glm::vec3 mPosition;
 
 	std::vector<ICombatEntityListener*> mListeners;
 
 public:
+	CombatEntity()
+	{
+		setBaseMaxHP(5);
+		setBaseMaxMP(5);
+		setBaseAttackDamage(1);
+		setBaseMoveSpeed(7.5f);
+
+		setHP(getMaxHP());
+		setMP(getMaxMP());
+	}
+
 	const glm::vec3& getPosition() const { return mPosition; }
 	void setPosition(const glm::vec3& pos) { mPosition = pos; }
 
@@ -3277,16 +3312,46 @@ public:
 	void addListener(ICombatEntityListener* listener) { mListeners.push_back(listener); }
 
 	void onKilled() { for (auto& listener : mListeners) { listener->onKilled(this); } }
+
+	// dependent stats
+
+	int getHP() { return mHP; }
+	void setHP(int hp) { mHP = std::min(hp, getMaxHP()); }
+	int getMP() { return mMP; }
+	void setMP(int mp) { mMP = std::min(mp, getMaxMP()); }
+
+	// base stats
+
+	int getBaseMaxHP() { return mMaxHP; }
+	void setBaseMaxHP(int maxhp) { mMaxHP = maxhp; recalcMaxHP(); }
+	int getBaseMaxMP() { return mMaxMP; }
+	void setBaseMaxMP(int maxmp) { mMaxMP = maxmp; recalcMaxMP(); }
+	int getBaseAttackDamage() { return mAttackDamage; }
+	void setBaseAttackDamage(int attackDamage) { mAttackDamage = attackDamage; recalcAttackDamage(); }
+	float getBaseMoveSpeed() { return mMoveSpeed; }
+	void setBaseMoveSpeed(float movespeed) { mMoveSpeed = movespeed; recalcMoveSpeed(); }
+
+	// bonus stats
+
+	void setBonusMaxHP(int maxhp) { mBonusMaxHP = maxhp; recalcMaxHP(); }
+	void setBonusMaxMP(int maxmp) { mBonusMaxMP = maxmp; recalcMaxMP(); }
+	void setBonusAttackDamage(int attack) { mBonusAttackDamage = attack; recalcAttackDamage(); }
+	void setBonusMoveSpeed(float movespeed) { mBonusMoveSpeed = movespeed; recalcMoveSpeed(); }
+
+	// true stats
+
+	int getMaxHP() { return mTrueMaxHP; }
+	int getMaxMP() { return mTrueMaxMP; }
+	int getAttackDamage() { return mTrueAttackDamage; }
+	float getMoveSpeed() { return mTrueMoveSpeed; }
 };
 
 #pragma endregion
 
 #pragma region Player Stats
 
-int playerHP = 10;
-int playerMaxHP = 10;
-int playerMP = 5;
-int playerMaxMP = 5;
+CombatEntity* playerEntity = new CombatEntity();
+
 int playerEXP = 0;
 int playerLevel = 1;
 
@@ -3300,8 +3365,8 @@ void playerGainEXP(int exp)
 		playerLevel++;
 		playerEXP = 0;
 
-		playerMaxHP += randomNumber(2, 6);
-		playerMaxMP += randomNumber(1, 3);
+		playerEntity->setBaseMaxHP(playerEntity->getBaseMaxHP() + randomNumber(2, 6));
+		playerEntity->setBaseMaxMP(playerEntity->getBaseMaxMP() + randomNumber(1, 3));
 	}
 }
 
@@ -3437,7 +3502,7 @@ void updatePlayer(float elapsed)
 	// apply mp regen
 	if (Tools::currentTimeMillis() - playerLastMpRegen > 10000)
 	{
-		if (playerMP < playerMaxMP) { playerMP = std::min(playerMaxMP, playerMP + 2); }
+		if (playerEntity->getMP() < playerEntity->getMaxMP()) { playerEntity->setMP(playerEntity->getMP() + 2); }
 		playerLastMpRegen = Tools::currentTimeMillis();
 	}
 
@@ -3451,7 +3516,7 @@ void updatePlayer(float elapsed)
 	}
 	else if (playerSamePosTime >= 5.0f)
 	{
-		if (playerHP < playerMaxHP) { playerHP = std::min(playerMaxHP, playerHP + 2); }
+		if (playerEntity->getHP() < playerEntity->getMaxHP()) { playerEntity->setHP(playerEntity->getHP() + 2); }
 		playerSamePosTime = 0;
 	}
 	else { playerSamePosTime += elapsed; }
@@ -3510,6 +3575,28 @@ public:
 	void setQuantity(short quantity) { mQuantity = quantity; }
 
 	InventoryType getInventoryType() { return getItemInventoryType(mId); }
+};
+
+class Equip : public Item
+{
+private:
+	int mHP = 0;
+	int mMP = 0;
+	int mAttackDamage = 0;
+	float mMoveSpeed = 0.0f;
+
+public:
+	Equip(int id) : Item(id) {}
+
+	int getHP() { return mHP; }
+	int getMP() { return mMP; }
+	int getAttackDamage() { return mAttackDamage; }
+	float getMoveSpeed() { return mMoveSpeed; }
+
+	void setHP(int hp) { mHP = hp; }
+	void setMP(int mp) { mMP = mp; }
+	void setAttackDamage(int attack) { mAttackDamage = attack; }
+	void setMoveSpeed(float movespeed) { mMoveSpeed = movespeed; }
 };
 
 class Inventory
@@ -3884,7 +3971,30 @@ LearnedSkill* getPlayerLearnedSkillById(int id)
 
 #pragma endregion
 
-CombatEntity* playerEntity = new CombatEntity();
+void playerRecalcEquipBonuses()
+{
+	int maxhp = 0;
+	int maxmp = 0;
+	int attack = 0;
+	float movespeed = 0.0f;
+
+	for (short slot = 1; slot < playerEquipmentItems.getSlotLimit(); slot++)
+	{
+		Equip* equip = (Equip*)playerEquipmentItems.getItem(slot);
+		
+		if (equip == 0) { continue; }
+
+		maxhp += equip->getHP();
+		maxmp += equip->getMP();
+		attack += equip->getAttackDamage();
+		movespeed += equip->getMoveSpeed();
+	}
+
+	playerEntity->setBonusMaxHP(maxhp);
+	playerEntity->setBonusMaxMP(maxmp);
+	playerEntity->setBonusAttackDamage(attack);
+	playerEntity->setBonusMoveSpeed(movespeed);
+}
 
 #pragma endregion
 
@@ -3934,11 +4044,6 @@ private:
 	bool mNewerPathfindAvailable = false;
 	bool mCurrentlyPathfinding = false;
 	IEnemyMovementController* mMovementController;
-
-	int mHP = 5;
-	int mMaxHP = 5;
-	int mAttackDamage = 1;
-	float mMoveSpeed = 7.5f;
 
 	long long mLastAttackTime = 0;
 
@@ -4010,14 +4115,14 @@ public:
 		}
 
 		// move towards player
-		if (distToPlayer >= 2.5f) { mPosition += mMoveDirection * elapsed * mMoveSpeed; }
+		if (distToPlayer >= 2.5f) { mPosition += mMoveDirection * elapsed * getMoveSpeed(); }
 
 		// attack if close enough to player
 		if (Tools::currentTimeMillis() - mLastAttackTime > 1500 && distToPlayer <= 3.5f)
 		{
 			mLastAttackTime = Tools::currentTimeMillis();
-			playerHP -= mAttackDamage;
-			if (playerHP <= 0) { playerEntity->onKilled(); }
+			playerEntity->setHP(playerEntity->getHP() - getAttackDamage());
+			if (playerEntity->getHP() <= 0) { playerEntity->onKilled(); }
 		}
 	}
 
@@ -4038,15 +4143,6 @@ public:
 		glutWireCube(1.0f);
 		glPopMatrix();
 	}
-
-	int getHP() { return mHP; }
-	void setHP(int hp) { mHP = hp; }
-	int getMaxHP() { return mMaxHP; }
-	void setMaxHP(int maxhp) { mMaxHP = maxhp; }
-	int getAttackDamage() { return mAttackDamage; }
-	void setAttackDamage(int attackDamage) { mAttackDamage = attackDamage; }
-	float getMoveSpeed() { return mMoveSpeed; }
-	void setMoveSpeed(float movespeed) { mMoveSpeed = movespeed; }
 };
 
 std::vector<std::unique_ptr<Enemy>> enemies;
@@ -4241,7 +4337,7 @@ public:
 	}
 	virtual void onUse()
 	{
-		playerHP = std::min(playerHP + 10, playerMaxHP);
+		playerEntity->setHP(playerEntity->getHP() + 10);
 	}
 };
 
@@ -4265,7 +4361,7 @@ public:
 	}
 	virtual void onUse()
 	{
-		playerMP = std::min(playerMP + 10, playerMaxMP);
+		playerEntity->setMP(playerEntity->getMP() + 10);
 	}
 };
 
@@ -4273,6 +4369,41 @@ std::unordered_map<int, std::unique_ptr<ItemInfo>> registeredItems;
 
 void registerItem(int id, ItemInfo* info) { registeredItems[id].reset(info); }
 ItemInfo* getItemInfo(int id) { return registeredItems.count(id) > 0 ? registeredItems[id].get() : 0; }
+
+Equip* createEquipById(int id)
+{
+	Equip* equip = new Equip(id);
+
+	if (id == 1492001)
+	{
+		equip->setAttackDamage(1);
+	}
+	else if (id == 1492002)
+	{
+		equip->setAttackDamage(2);
+	}
+	else if (id == 1492003)
+	{
+		equip->setAttackDamage(3);
+	}
+	else if (id == 1492004)
+	{
+		equip->setAttackDamage(2);
+		equip->setMoveSpeed(1.0f);
+	}
+	else if (id == 1492005)
+	{
+		equip->setAttackDamage(3);
+		equip->setMoveSpeed(2.0f);
+	}
+	else if (id == 1492006)
+	{
+		equip->setAttackDamage(4);
+		equip->setMoveSpeed(3.0f);
+	}
+
+	return equip;
+}
 
 #pragma endregion
 
@@ -4485,6 +4616,42 @@ UIWindow* getUIWindowByTitle(const std::string& title)
 
 #pragma endregion
 
+class ItemDisplayUIWindow : public UIWindow
+{
+protected:
+	void drawItemTooltip(const glm::ivec2& curPos, Item* item)
+	{
+		pushTransformMatrix();
+		glColor4f(0.25f, 0.25f, 0.25f, 0.9f);
+		quad(curPos.x + 20, curPos.y + 20, 175, 100);
+		glColor3f(1.0f, 1.0f, 1.0f);
+		ItemInfo* info = getItemInfo(item->getItemId());
+		if (info)
+		{
+			text(curPos.x + 23, curPos.y + 23 + 18, GLUT_BITMAP_HELVETICA_18, info->getName());
+			text(curPos.x + 23, curPos.y + 23 + 18 + 3 + 12, GLUT_BITMAP_HELVETICA_12, info->getDescription());
+
+			if (item->getInventoryType() == InventoryType::EQUIP)
+			{
+				Equip* equip = (Equip*)item;
+				int yOff = curPos.y + 23 + 18 + 3 + 12 + 3 + 10;
+				if (equip->getHP() > 0) { text(curPos.x + 23, yOff, GLUT_BITMAP_HELVETICA_10, "HP +" + std::to_string(equip->getHP())); yOff += 13; }
+				if (equip->getMP() > 0) { text(curPos.x + 23, yOff, GLUT_BITMAP_HELVETICA_10, "MP +" + std::to_string(equip->getMP())); yOff += 13; }
+				if (equip->getAttackDamage() > 0) { text(curPos.x + 23, yOff, GLUT_BITMAP_HELVETICA_10, "Attack +" + std::to_string(equip->getAttackDamage())); yOff += 13; }
+				if (equip->getMoveSpeed() > 0) { text(curPos.x + 23, yOff, GLUT_BITMAP_HELVETICA_10, "Move Speed +" + std::to_string(equip->getMoveSpeed())); yOff += 13; }
+			}
+		}
+		else
+		{
+			text(curPos.x + 23, curPos.y + 23 + 12, GLUT_BITMAP_HELVETICA_12, "Item information not loaded.");
+		}
+		popTransformMatrix();
+	}
+
+public:
+	ItemDisplayUIWindow(const glm::ivec2& pos, const glm::ivec2& size, const std::string& title) : UIWindow(pos, size, title) {}
+};
+
 Item* clickSelectedItem = 0;
 Inventory* clickSelectedItemInventory = 0;
 
@@ -4503,7 +4670,7 @@ void updateClickSelectedItem()
 	}
 }
 
-class InventoryWindow : public UIWindow
+class InventoryWindow : public ItemDisplayUIWindow
 {
 protected:
 	virtual void draw()
@@ -4603,12 +4770,14 @@ protected:
 						playerEquipmentItems.setSlot((short)eqInvSlot, item);
 
 						// TODO: dont add skill if already known!
-						// TODO: should be skill id taught by item with given item id
+						// TODO: should be skill id taught by item with given item id (currently assumes itemid == skillid...)
 						playerSkills.push_back(std::unique_ptr<LearnedSkill>(new LearnedSkill(item->getItemId(), 1, 0)));
 						addInformationHistory("Learned skill (" + loadedSkills[item->getItemId()]->getName() + ")");
 
 						// add old item back into inventory if it exists. doing this after ensures no overflow if inv is full when equipping
 						if (existingEq) { playerInventoryItems.addItem(existingEq); }
+
+						playerRecalcEquipBonuses();
 					}
 					else if (type == InventoryType::USE)
 					{
@@ -4636,34 +4805,17 @@ protected:
 			{
 				short slot = i + 1;
 				Item* item = playerInventoryItems.getItem(slot);
-				if (item)
-				{
-					pushTransformMatrix();
-					glColor4f(0.25f, 0.25f, 0.25f, 0.9f);
-					quad(curPos.x + 20, curPos.y + 20, 150, 80);
-					glColor3f(1.0f, 1.0f, 1.0f);
-					ItemInfo* info = getItemInfo(item->getItemId());
-					if (info)
-					{
-						text(curPos.x + 23, curPos.y + 23 + 18, GLUT_BITMAP_HELVETICA_18, info->getName());
-						text(curPos.x + 23, curPos.y + 23 + 18 + 3 + 12, GLUT_BITMAP_HELVETICA_12, info->getDescription());
-					}
-					else
-					{
-						text(curPos.x + 23, curPos.y + 23 + 12, GLUT_BITMAP_HELVETICA_12, "Item information not loaded.");
-					}
-					popTransformMatrix();
-				}
+				if (item) { drawItemTooltip(curPos, item); }
 				break;
 			}
 		}
 	}
 
 public:
-	InventoryWindow() : UIWindow(glm::ivec2(95, 95), glm::ivec2(330, 345), "Inventory") {}
+	InventoryWindow() : ItemDisplayUIWindow(glm::ivec2(95, 95), glm::ivec2(330, 345), "Inventory") {}
 };
 
-class EquipmentWindow : public UIWindow
+class EquipmentWindow : public ItemDisplayUIWindow
 {
 protected:
 	virtual void draw()
@@ -4726,10 +4878,12 @@ protected:
 
 					// disallow inventory overflow
 					if (playerInventoryItems.getNumFreeSlot() == 0) { addInformationHistory("No free inventory space!"); }
+					// unequip item
 					else
 					{
 						Item* eq = playerEquipmentItems.releaseSlot(slot);
 						playerInventoryItems.addItem(eq);
+						playerRecalcEquipBonuses();
 					}
 				}
 				break;
@@ -4737,8 +4891,29 @@ protected:
 		}
 	}
 
+	virtual void mouseMove(int x, int y)
+	{
+		glm::ivec2 curPos(x, y);
+
+		for (short i = 0; i < playerEquipmentItems.getSlotLimit(); i++)
+		{
+			int row = i / 6;
+			int col = i % 6;
+			glm::ivec2 low(5 + (col * 52), 5 + (row * 52));
+			glm::ivec2 high(low.x + 48, low.y + 48);
+
+			if (curPos.x >= low.x && curPos.y >= low.y && curPos.x <= high.x && curPos.y <= high.y)
+			{
+				short slot = i + 1;
+				Item* item = playerEquipmentItems.getItem(slot);
+				if (item) { drawItemTooltip(curPos, item); }
+				break;
+			}
+		}
+	}
+
 public:
-	EquipmentWindow() : UIWindow(glm::ivec2(495, 95), glm::ivec2(330, 500), "Equipment") {}
+	EquipmentWindow() : ItemDisplayUIWindow(glm::ivec2(495, 95), glm::ivec2(330, 500), "Equipment") {}
 };
 
 LearnedSkill* clickSelectedSkill = 0;
@@ -5600,7 +5775,7 @@ CraftingRecipe* createCraftingRecipe(int itemId, short quantity)
 	return recipe;
 }
 
-class CraftingWindow : public UIWindow
+class CraftingWindow : public ItemDisplayUIWindow
 {
 private:
 	CraftingRecipe* mUsableRecipe;
@@ -5759,31 +5934,14 @@ protected:
 			{
 				short slot = i + 1;
 				Item* item = playerCraftingItems.getItem(slot);
-				if (item)
-				{
-					pushTransformMatrix();
-					glColor4f(0.25f, 0.25f, 0.25f, 0.9f);
-					quad(curPos.x + 20, curPos.y + 20, 150, 80);
-					glColor3f(1.0f, 1.0f, 1.0f);
-					ItemInfo* info = getItemInfo(item->getItemId());
-					if (info)
-					{
-						text(curPos.x + 23, curPos.y + 23 + 18, GLUT_BITMAP_HELVETICA_18, info->getName());
-						text(curPos.x + 23, curPos.y + 23 + 18 + 3 + 12, GLUT_BITMAP_HELVETICA_12, info->getDescription());
-					}
-					else
-					{
-						text(curPos.x + 23, curPos.y + 23 + 12, GLUT_BITMAP_HELVETICA_12, "Item information not loaded.");
-					}
-					popTransformMatrix();
-				}
+				if (item) { drawItemTooltip(curPos, item); }
 				break;
 			}
 		}
 	}
 
 public:
-	CraftingWindow() : UIWindow(glm::ivec2(200, 120), glm::ivec2(265, 190), "Crafting") {}
+	CraftingWindow() : ItemDisplayUIWindow(glm::ivec2(200, 120), glm::ivec2(265, 190), "Crafting") {}
 };
 
 #pragma endregion
@@ -5860,10 +6018,10 @@ struct RaycasterShotHit
 void shootRaycaster(int mode)
 {
 	// validate
-	if (playerMP < mode) { printf("Not enough MP to shoot Raycaster at mode %d!\n", mode); return; }
+	if (playerEntity->getMP() < mode) { printf("Not enough MP to shoot Raycaster at mode %d!\n", mode); return; }
 
 	printf("Raycaster shot (mode %d)!\n", mode);
-	playerMP -= mode;
+	playerEntity->setMP(playerEntity->getMP() - mode);
 
 	// calculate weapon ray points
 	glm::vec3 rayStart(cx, cy, cz);
@@ -6041,10 +6199,10 @@ public:
 void startChargeDash(int mode)
 {
 	// validate
-	if (playerMP < mode) { printf("Not enough MP to charge dash at mode %d!\n", mode); return; }
+	if (playerEntity->getMP() < mode) { printf("Not enough MP to charge dash at mode %d!\n", mode); return; }
 
 	printf("Charge dash started at (%s) (mode %d)\n", to_string(glm::vec3(cx, cy, cz)).c_str(), mode);
-	playerMP -= mode;
+	playerEntity->setMP(playerEntity->getMP() - mode);
 
 	skillEffects.push_back(std::unique_ptr<ISkillEffect>(new ChargeDash(mode)));
 }
@@ -6554,8 +6712,10 @@ private:
 
 	VisibleRegionBorder* mVisibleBorder;
 
+	int mDifficulty;
+
 public:
-	Dungeon(int x, int z) : mPosition(x, 0, z), mSize(57, 6, 57)
+	Dungeon(int x, int z, int difficulty) : mPosition(x, 0, z), mSize(57, 6, 57), mDifficulty(difficulty)
 	{
 		mMovementController.reset(new DungeonEnemyMovementController(this));
 
@@ -6571,7 +6731,7 @@ public:
 		{
 			for (int i = 0; i < 10; i++)
 			{
-				glm::ivec2 pos = mazeClearedTiles[randomNumber(3, mazeClearedTiles.size() - 1)];
+				glm::ivec2 pos = mazeClearedTiles[getRandomInt(3, mazeClearedTiles.size() - 1)];
 				spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(mPosition.x + (pos.x * 16) + 3, 0.0f, mPosition.z + (pos.y * 16) + 3), mMovementController.get())));
 			}
 		}
@@ -6655,7 +6815,71 @@ public:
 			setTree(chunkStart.x + getRandomInt(3, 10), 0, chunkStart.z + getRandomInt(3, 10));
 		}
 	}
+
+	int getDifficulty() { return mDifficulty; }
 };
+
+#pragma region Biomes
+
+enum class BiomeType
+{
+	FOREST,
+	PLAIN,
+	ICE,
+	JUNGLE,
+	DESERT,
+	MOUNTAINS
+};
+
+// attributes to customize a biome. perlin vals stored as double to avoid constant typecasting
+struct BiomeAttributes
+{
+	double perlinScaleX;
+	double perlinScaleY;
+	double perlinScaleZ;
+	int redLow;
+	int redHigh;
+	int greenLow;
+	int greenHigh;
+	int blueLow;
+	int blueHigh;
+	bool trees;
+};
+
+std::unordered_map<BiomeType, std::unique_ptr<BiomeAttributes>> registeredBiomes;
+
+void registerBiomeAttributes(BiomeType type, int psx, int psy, int psz, int rl, int rh, int gl, int gh, int bl, int bh, bool trees)
+{
+	BiomeAttributes* attrib = new BiomeAttributes;
+	attrib->perlinScaleX = (double)psx;
+	attrib->perlinScaleY = (double)psy;
+	attrib->perlinScaleZ = (double)psz;
+	attrib->redLow = rl;
+	attrib->redHigh = rh;
+	attrib->greenLow = gl;
+	attrib->greenHigh = gh;
+	attrib->blueLow = bl;
+	attrib->blueHigh = bh;
+	attrib->trees = trees;
+	registeredBiomes[type].reset(attrib);
+}
+
+std::unordered_map<glm::ivec2, BiomeType, KeyHash_GLMIVec2, KeyEqual_GLMIVec2> loadedBiomes;
+
+// retrieves (and creates as necessary) the biome for any given chunk
+BiomeType getChunkBiome(int x, int z)
+{
+	glm::ivec2 pos(x / 16, z / 16);
+
+	auto it = loadedBiomes.find(pos);
+	if (it != loadedBiomes.end()) { return it->second; }
+
+	BiomeType ret = (BiomeType)getRandomInt((int)BiomeType::FOREST, (int)BiomeType::MOUNTAINS);
+	loadedBiomes[pos] = ret;
+	return ret;
+}
+
+#pragma endregion
 
 #pragma endregion
 
@@ -6856,13 +7080,16 @@ void loadConfig()
 	{
 		printf("settings.ini not found. no configuration was loaded.\n");
 
+		playerEntity->setBaseMaxHP(10);
+		playerEntity->setHP(playerEntity->getMaxHP());
+
 		// TODO: remove! TEMP, TESTING
-		playerInventoryItems.addItem(new Item(1492001));
-		playerInventoryItems.addItem(new Item(1492002));
-		playerInventoryItems.addItem(new Item(1492003));
-		playerInventoryItems.addItem(new Item(1492004));
-		playerInventoryItems.addItem(new Item(1492005));
-		playerInventoryItems.addItem(new Item(1492006));
+		playerInventoryItems.addItem(createEquipById(1492001));
+		playerInventoryItems.addItem(createEquipById(1492002));
+		playerInventoryItems.addItem(createEquipById(1492003));
+		playerInventoryItems.addItem(createEquipById(1492004));
+		playerInventoryItems.addItem(createEquipById(1492005));
+		playerInventoryItems.addItem(createEquipById(1492006));
 		playerInventoryItems.addItem(new Item(2000001, 1000));
 		playerInventoryItems.addItem(new Item(2000002, 1000));
 		playerInventoryItems.addItem(new Item(2100000, 100));
@@ -6880,10 +7107,10 @@ void loadConfig()
 	cz = cfg.getFloat("Player", "z");
 
 	// combat stats
-	playerHP = cfg.getInt("Player", "hp");
-	playerMaxHP = cfg.getInt("Player", "maxHp");
-	playerMP = cfg.getInt("Player", "mp");
-	playerMaxMP = cfg.getInt("Player", "maxMp");
+	playerEntity->setBaseMaxHP(cfg.getInt("Player", "maxHp"));
+	playerEntity->setHP(cfg.getInt("Player", "hp"));
+	playerEntity->setBaseMaxMP(cfg.getInt("Player", "maxMp"));
+	playerEntity->setMP(cfg.getInt("Player", "mp"));
 	playerEXP = cfg.getInt("Player", "exp");
 	playerLevel = cfg.getInt("Player", "level");
 
@@ -6914,10 +7141,10 @@ void saveConfig()
 	cfg.setFloat("Player", "z", cz);
 
 	// combat stats
-	cfg.setInt("Player", "hp", playerHP);
-	cfg.setInt("Player", "maxHp", playerMaxHP);
-	cfg.setInt("Player", "mp", playerMP);
-	cfg.setInt("Player", "maxMp", playerMaxMP);
+	cfg.setInt("Player", "hp", playerEntity->getHP());
+	cfg.setInt("Player", "maxHp", playerEntity->getBaseMaxHP());
+	cfg.setInt("Player", "mp", playerEntity->getMP());
+	cfg.setInt("Player", "maxMp", playerEntity->getMaxMP());
 	cfg.setInt("Player", "exp", playerEXP);
 	cfg.setInt("Player", "level", playerLevel);
 
@@ -7034,7 +7261,7 @@ public:
 		enemies.clear();
 		for (auto& i : spawnPoints) { i->reset(); }
 		//droppedItems.clear();
-		playerHP = 5;
+		playerEntity->setHP(5);
 		showDialogueWindow(new WavesFailedDialogueWindow());
 		playerDeaths++;
 	}
@@ -7119,6 +7346,8 @@ Dungeon* getChunkDungeon(int x, int y, int z)
 
 void initNoiseChunk(int x, int y, int z)
 {
+	BiomeAttributes* biome = registeredBiomes[getChunkBiome(x, z)].get();
+
 	int xxStart = x * 16;
 	int yyStart = y * 16;
 	int zzStart = z * 16;
@@ -7129,12 +7358,12 @@ void initNoiseChunk(int x, int y, int z)
 		{
 			for (int zz = zzStart; zz < zzStart + 16; zz++)
 			{
-				double n = noise.noise((double)xx / 128.0, (double)yy / 128.0, (double)zz / 128.0);
+				double n = noise.noise((double)xx / biome->perlinScaleX, (double)yy / biome->perlinScaleY, (double)zz / biome->perlinScaleZ);
 				n += 1.0; // temporarily push all generation into positive space. physics fucks up at cy < 0
 				n *= 16.0;
 				if (yy <= (int)std::floor(n))
 				{
-					setVoxel(xx, yy, zz, randomNumber(0, 30), randomNumber(100, 255), randomNumber(0, 30));
+					setVoxel(xx, yy, zz, getRandomInt(biome->redLow, biome->redHigh), getRandomInt(biome->greenLow, biome->greenHigh), getRandomInt(biome->blueLow, biome->blueHigh));
 				}
 			}
 		}
@@ -7164,8 +7393,9 @@ void loadNewChunks()
 
 					// load unloaded chunk near range, using perlin
 					initNoiseChunk(x, y, z);
-					// let's just try tree creation each chunk for now, why not
-					treeChunks.push_back(glm::ivec3(x, y, z));
+					// tree generation is determined by the biome attribute
+					BiomeAttributes* biome = registeredBiomes[getChunkBiome(x, z)].get();
+					if (biome->trees) { treeChunks.push_back(glm::ivec3(x, y, z)); }
 				}
 				else { loadTreeVoxelsForChunk(x, y, z); }
 			}
@@ -7221,7 +7451,7 @@ void loadNpcChunks(LoadedNPC* npc)
 
 void loadTown(const glm::ivec3& pos, const glm::ivec3& trainingGroundOffset, const std::string& name)
 {
-	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(pos.x, pos.z)));
+	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(pos.x, pos.z, 1)));
 	addPortal(pos.x + 1024 - 20, 0, pos.z + 1024 - 20, name + " Portal");
 	loadNPC(3, glm::vec3(pos.x + 1024 - 40, 0, pos.z + 1024 - 40));
 
@@ -7337,10 +7567,10 @@ void drawGameMap(float elapsed)
 				Enemy* enemy = i.get()->getEnemy();
 
 				// scale with waves
-				enemy->setMaxHP(enemy->getMaxHP() * currentWave);
+				enemy->setBaseMaxHP(enemy->getMaxHP() * (currentWave * activeDungeon->getDifficulty()));
 				enemy->setHP(enemy->getMaxHP());
-				enemy->setAttackDamage(enemy->getAttackDamage() * currentWave);
-				enemy->setMoveSpeed(enemy->getMoveSpeed() + ((currentWave - 1) * 1.5f));
+				enemy->setBaseAttackDamage(enemy->getAttackDamage() * (currentWave * activeDungeon->getDifficulty()));
+				enemy->setBaseMoveSpeed(enemy->getMoveSpeed() + (((currentWave - 1) * 1.5f) * activeDungeon->getDifficulty()));
 
 				// prepare with necessary listeners
 				enemy->addListener(waveEnemyListener.get());
@@ -7483,16 +7713,16 @@ void renderScene()
 	glColor4f(1.0f, 0.0f, 0.0f, 0.5f);
 	drawQuad2D(0, windowHeight - 50, windowWidth / 2, 25);
 	glColor4f(1.0f, 0.0f, 0.0f, 0.8f);
-	drawQuad2D(0, windowHeight - 50, calcProgressWidth(playerHP, playerMaxHP, windowWidth / 2), 25);
+	drawQuad2D(0, windowHeight - 50, calcProgressWidth(playerEntity->getHP(), playerEntity->getMaxHP(), windowWidth / 2), 25);
 	glColor3f(0.0f, 0.0f, 0.0f);
-	renderString(windowWidth / 4, windowHeight - 30, GLUT_BITMAP_HELVETICA_18, std::string("HP: ") + std::to_string(playerHP) + " / " + std::to_string(playerMaxHP));
+	renderString(windowWidth / 4, windowHeight - 30, GLUT_BITMAP_HELVETICA_18, std::string("HP: ") + std::to_string(playerEntity->getHP()) + " / " + std::to_string(playerEntity->getMaxHP()));
 	// mp bar
 	glColor4f(0.0f, 0.0f, 1.0f, 0.5f);
 	drawQuad2D(windowWidth / 2, windowHeight - 50, windowWidth / 2, 25);
 	glColor4f(0.0f, 0.0f, 1.0f, 0.8f);
-	drawQuad2D(windowWidth / 2, windowHeight - 50, calcProgressWidth(playerMP, playerMaxMP, windowWidth / 2), 25);
+	drawQuad2D(windowWidth / 2, windowHeight - 50, calcProgressWidth(playerEntity->getMP(), playerEntity->getMaxMP(), windowWidth / 2), 25);
 	glColor3f(0.0f, 0.0f, 0.0f);
-	renderString((windowWidth / 2) + (windowWidth / 4), windowHeight - 30, GLUT_BITMAP_HELVETICA_18, std::string("MP: ") + std::to_string(playerMP) + " / " + std::to_string(playerMaxMP));
+	renderString((windowWidth / 2) + (windowWidth / 4), windowHeight - 30, GLUT_BITMAP_HELVETICA_18, std::string("MP: ") + std::to_string(playerEntity->getMP()) + " / " + std::to_string(playerEntity->getMaxMP()));
 	// exp bar
 	glColor4f(0.0f, 1.0f, 0.0f, 0.5f);
 	drawQuad2D(0, windowHeight - 25, windowWidth, 25);
@@ -7915,6 +8145,14 @@ int main(int argc, char** argv)
 
 	// load player config
 	loadConfig();
+
+	// register biome attributes
+	registerBiomeAttributes(BiomeType::FOREST, 128, 128, 128, 0, 30, 100, 255, 0, 30, true);
+	registerBiomeAttributes(BiomeType::PLAIN, 1024, 32, 1024, 0, 30, 100, 255, 0, 30, true);
+	registerBiomeAttributes(BiomeType::ICE, 512, 64, 512, 0, 198, 239, 239, 255, 255, false);
+	registerBiomeAttributes(BiomeType::JUNGLE, 256, 256, 256, 0, 15, 0, 75, 0, 15, true);
+	registerBiomeAttributes(BiomeType::DESERT, 2048, 128, 2048, 232, 232, 232, 232, 155, 221, false);
+	registerBiomeAttributes(BiomeType::MOUNTAINS, 32, 2048, 32, 112, 183, 94, 153, 68, 111, false);
 
 	// load map
 	loadGameMap();

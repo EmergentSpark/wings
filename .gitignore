@@ -6,6 +6,8 @@
 # Directories
 /wings/Release/
 /.vs/
+/Debug/
+/wings/Debug/
 
 # Files
 Release/settings.ini
