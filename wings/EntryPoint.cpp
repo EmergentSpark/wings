@@ -33,6 +33,7 @@
 
 #include "XMLParser.hpp"
 #include "PerlinNoise.hpp"
+#include "EnemyDropEntry.hpp"
 
 #pragma endregion
 
@@ -2815,6 +2816,8 @@ int getRandomInt() { return std::uniform_int_distribution<int>()(mt); }
 
 int getRandomInt(int min, int max) { return std::uniform_int_distribution<int>(min, max)(mt); }
 
+double getRandomDouble() { return std::uniform_real_distribution<double>()(mt); }
+
 glm::vec3 charPos;
 
 int randomNumber(int LO, int HI) { return LO + (rand()) / ((RAND_MAX / (HI - LO))); }
@@ -4000,9 +4003,34 @@ void playerRecalcEquipBonuses()
 
 #pragma region Enemies
 
-void drawSnowMan() {
+class Enemy;
 
-	glColor3f(1.0f, 1.0f, 1.0f);
+void loadEnemyStats(Enemy* enemy, int id);
+
+void drawEnemy(int id)
+{
+	glm::vec3 bodyColor(0.0f, 0.0f, 0.0f);
+
+	if (id == 1)
+	{
+		bodyColor.r = 1.0f;
+		bodyColor.g = 1.0f;
+		bodyColor.b = 1.0f;
+	}
+	else if (id == 2)
+	{
+		bodyColor.r = 1.0f;
+		bodyColor.g = 0.0f;
+		bodyColor.b = 0.0f;
+	}
+	else if (id == 3)
+	{
+		bodyColor.r = 0.0f;
+		bodyColor.g = 0.0f;
+		bodyColor.b = 1.0f;
+	}
+
+	glColor3f(bodyColor.r, bodyColor.g, bodyColor.b);
 
 	// Draw Body
 	glTranslatef(0.0f, 0.75f, 0.0f);
@@ -4056,8 +4084,14 @@ private:
 		enemy->mCurrentlyPathfinding = false;
 	}
 
+	int mId;
+
 public:
-	Enemy(const glm::vec3& pos, IEnemyMovementController* moveController) : mMovementController(moveController) { setPosition(pos); }
+	Enemy(const glm::vec3& pos, IEnemyMovementController* moveController, int id) : mMovementController(moveController), mId(id)
+	{
+		setPosition(pos);
+		loadEnemyStats(this, id);
+	}
 
 	void update(float elapsed)
 	{
@@ -4131,7 +4165,7 @@ public:
 		// draw mesh
 		glPushMatrix();
 		glTranslatef(mPosition.x, mPosition.y, mPosition.z);
-		drawSnowMan();
+		drawEnemy(mId);
 		glPopMatrix();
 
 		// draw aabb
@@ -4145,6 +4179,34 @@ public:
 	}
 };
 
+void loadEnemyStats(Enemy* enemy, int id)
+{
+	if (id == 1)
+	{
+		enemy->setBaseMaxHP(5);
+		enemy->setBaseMaxMP(5);
+		enemy->setBaseAttackDamage(1);
+		enemy->setBaseMoveSpeed(7.5f);
+	}
+	else if (id == 2)
+	{
+		enemy->setBaseMaxHP(10);
+		enemy->setBaseMaxMP(10);
+		enemy->setBaseAttackDamage(2);
+		enemy->setBaseMoveSpeed(8.5f);
+	}
+	else if (id == 3)
+	{
+		enemy->setBaseMaxHP(15);
+		enemy->setBaseMaxMP(15);
+		enemy->setBaseAttackDamage(3);
+		enemy->setBaseMoveSpeed(10.0f);
+	}
+
+	enemy->setHP(enemy->getMaxHP());
+	enemy->setMP(enemy->getMaxMP());
+}
+
 std::vector<std::unique_ptr<Enemy>> enemies;
 
 class EnemySpawnPoint
@@ -4154,6 +4216,7 @@ private:
 	long long mNextSpawnTime;
 	int mSpawnedEnemies;
 	IEnemyMovementController* mMovementController;
+	int mEnemyId;
 
 	class MobListener : public ICombatEntityListener
 	{
@@ -4172,7 +4235,7 @@ private:
 	std::unique_ptr<MobListener> mMobListener;
 
 public:
-	EnemySpawnPoint(const glm::vec3& pos, IEnemyMovementController* moveController) : mPosition(pos), mNextSpawnTime(0), mSpawnedEnemies(0), mMovementController(moveController)
+	EnemySpawnPoint(const glm::vec3& pos, IEnemyMovementController* moveController, int enemyId) : mPosition(pos), mNextSpawnTime(0), mSpawnedEnemies(0), mMovementController(moveController), mEnemyId(enemyId)
 	{ mMobListener.reset(new MobListener(this)); }
 
 	const glm::vec3& getPosition() const { return mPosition; }
@@ -4185,7 +4248,7 @@ public:
 
 	Enemy* getEnemy()
 	{
-		Enemy* newEnemy = new Enemy(mPosition, mMovementController);
+		Enemy* newEnemy = new Enemy(mPosition, mMovementController, mEnemyId);
 		newEnemy->addListener(mMobListener.get());
 		
 		mNextSpawnTime = Tools::currentTimeMillis() + 10000;
@@ -4341,6 +4404,54 @@ public:
 	}
 };
 
+class Item_OrangePotion : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "Orange Potion"; }
+	virtual std::string getDescription() { return "Restores 50 HP."; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
+		drawQuad2D(12, 12, 24, 24);
+		drawQuad2D(18, 10, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
+		drawQuad2D(18, 8, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
+		drawQuad2D(20, 12, 8, 2);
+		drawQuad2D(14, 14, 20, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(242), BYTE_TO_FLOAT_COLOR(137), BYTE_TO_FLOAT_COLOR(58));
+		drawQuad2D(14, 16, 20, 18);
+	}
+	virtual void onUse()
+	{
+		playerEntity->setHP(playerEntity->getHP() + 50);
+	}
+};
+
+class Item_WhitePotion : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "White Potion"; }
+	virtual std::string getDescription() { return "Restores 100 HP."; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
+		drawQuad2D(12, 12, 24, 24);
+		drawQuad2D(18, 10, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
+		drawQuad2D(18, 8, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
+		drawQuad2D(20, 12, 8, 2);
+		drawQuad2D(14, 14, 20, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(239), BYTE_TO_FLOAT_COLOR(237), BYTE_TO_FLOAT_COLOR(227));
+		drawQuad2D(14, 16, 20, 18);
+	}
+	virtual void onUse()
+	{
+		playerEntity->setHP(playerEntity->getHP() + 100);
+	}
+};
+
 class Item_BluePotion : public ItemInfo
 {
 public:
@@ -4362,6 +4473,30 @@ public:
 	virtual void onUse()
 	{
 		playerEntity->setMP(playerEntity->getMP() + 10);
+	}
+};
+
+class Item_ManaElixir : public ItemInfo
+{
+public:
+	virtual std::string getName() { return "Mana Elixir"; }
+	virtual std::string getDescription() { return "Restores 100 MP."; }
+	virtual void drawIcon()
+	{
+		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
+		drawQuad2D(12, 12, 24, 24);
+		drawQuad2D(18, 10, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
+		drawQuad2D(18, 8, 12, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
+		drawQuad2D(20, 12, 8, 2);
+		drawQuad2D(14, 14, 20, 2);
+		glColor3f(BYTE_TO_FLOAT_COLOR(11), BYTE_TO_FLOAT_COLOR(19), BYTE_TO_FLOAT_COLOR(237));
+		drawQuad2D(14, 16, 20, 18);
+	}
+	virtual void onUse()
+	{
+		playerEntity->setMP(playerEntity->getMP() + 100);
 	}
 };
 
@@ -4401,6 +4536,30 @@ Equip* createEquipById(int id)
 		equip->setAttackDamage(4);
 		equip->setMoveSpeed(3.0f);
 	}
+
+	return equip;
+}
+
+int getRandStat(int defaultValue, int maxRange)
+{
+	if (defaultValue == 0) { return 0; }
+	int lMaxRange = (int)std::min(std::ceil(defaultValue * 0.1), (double)maxRange);
+	return (int)((defaultValue - lMaxRange) + std::floor(getRandomDouble() * (lMaxRange * 2 + 1)));
+}
+
+float getRandStatf(float defaultValue, float maxRange)
+{
+	if (defaultValue == 0) { return 0; }
+	float lMaxRange = std::min(std::ceilf(defaultValue * 0.1f), maxRange);
+	return ((defaultValue - lMaxRange) + std::floorf((float)getRandomDouble() * (lMaxRange * 2 + 1)));
+}
+
+Equip* randomizeStats(Equip* equip)
+{
+	equip->setHP(getRandStat(equip->getHP(), 10));
+	equip->setMP(getRandStat(equip->getMP(), 10));
+	equip->setAttackDamage(getRandStat(equip->getAttackDamage(), 5));
+	equip->setMoveSpeed(getRandStatf(equip->getMoveSpeed(), 5));
 
 	return equip;
 }
@@ -6673,17 +6832,32 @@ private:
 		}
 	}
 
+	void setWallVoxel(int x, int y, int z)
+	{
+		setVoxel(x, y, z,
+			getRandomInt(0, mThemeId == 2 ? 75 : 15),
+			getRandomInt(0, mThemeId == 1 ? 75 : 15),
+			getRandomInt(0, mThemeId == 3 ? 75 : 15)
+		);
+	}
+
+	void setFloorVoxel(int x, int y, int z)
+	{
+		setVoxel(x, y, z,
+			getRandomInt(mThemeId == 2 ? 100 : 0, mThemeId == 2 ? 255 : 30),
+			getRandomInt(mThemeId == 1 ? 100 : 0, mThemeId == 1 ? 255 : 30),
+			getRandomInt(mThemeId == 3 ? 100 : 0, mThemeId == 3 ? 255 : 30)
+		);
+	}
+
 	void generateMazeWallVoxels(int baseX, int baseZ, MazeWall wall)
 	{
 		for (int i = 0; i < 16; i++)
 		{
-			setVoxel(
+			setWallVoxel(
 				baseX + (wall == MazeWall::FORWARD || wall == MazeWall::BACKWARD ? i : 0) + (wall == MazeWall::RIGHT ? 15 : 0),
 				0,
-				baseZ + (wall == MazeWall::LEFT || wall == MazeWall::RIGHT ? i : 0) + (wall == MazeWall::FORWARD ? 15 : 0),
-				randomNumber(0, 15),
-				randomNumber(0, 75),
-				randomNumber(0, 15)
+				baseZ + (wall == MazeWall::LEFT || wall == MazeWall::RIGHT ? i : 0) + (wall == MazeWall::FORWARD ? 15 : 0)
 			);
 		}
 	}
@@ -6713,9 +6887,10 @@ private:
 	VisibleRegionBorder* mVisibleBorder;
 
 	int mDifficulty;
+	int mThemeId;
 
 public:
-	Dungeon(int x, int z, int difficulty) : mPosition(x, 0, z), mSize(57, 6, 57), mDifficulty(difficulty)
+	Dungeon(int x, int z, int difficulty, int themeId) : mPosition(x, 0, z), mSize(57, 6, 57), mDifficulty(difficulty), mThemeId(themeId)
 	{
 		mMovementController.reset(new DungeonEnemyMovementController(this));
 
@@ -6732,7 +6907,8 @@ public:
 			for (int i = 0; i < 10; i++)
 			{
 				glm::ivec2 pos = mazeClearedTiles[getRandomInt(3, mazeClearedTiles.size() - 1)];
-				spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(mPosition.x + (pos.x * 16) + 3, 0.0f, mPosition.z + (pos.y * 16) + 3), mMovementController.get())));
+				// TODO: currently assumes mobId == themeId. needs flexibility.
+				spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(mPosition.x + (pos.x * 16) + 3, 0.0f, mPosition.z + (pos.y * 16) + 3), mMovementController.get(), mThemeId)));
 			}
 		}
 		else { printf("[WARN] Dungeon generated with less than 3 cleared tiles!\n"); }
@@ -6788,7 +6964,7 @@ public:
 		{
 			for (int z = 0; z < 16; z++)
 			{
-				setVoxel(chunkStart.x + x, -1, chunkStart.z + z, randomNumber(0, 30), randomNumber(100, 255), randomNumber(0, 30));
+				setFloorVoxel(chunkStart.x + x, -1, chunkStart.z + z);
 				//if (x == -200 || x == 200 || z == -200 || z == 200) { setVoxel(x, 0, z, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15)); }
 			}
 		}
@@ -6807,7 +6983,7 @@ public:
 			{
 				for (int zz = 0; zz < 14; zz++)
 				{
-					setVoxel(chunkStart.x + 1 + xx, 0, chunkStart.z + 1 + zz, randomNumber(0, 15), randomNumber(0, 75), randomNumber(0, 15));
+					setWallVoxel(chunkStart.x + 1 + xx, 0, chunkStart.z + 1 + zz);
 				}
 			}
 
@@ -6887,6 +7063,7 @@ BiomeType getChunkBiome(int x, int z)
 
 VisibleRegionBorder* landOwnershipBorder;
 VisibleRegionBorder* wildernessBorder;
+VisibleRegionBorder* dangerousWildBorder;
 
 std::vector<glm::ivec3> ownedChunks;
 
@@ -7092,6 +7269,9 @@ void loadConfig()
 		playerInventoryItems.addItem(createEquipById(1492006));
 		playerInventoryItems.addItem(new Item(2000001, 1000));
 		playerInventoryItems.addItem(new Item(2000002, 1000));
+		playerInventoryItems.addItem(new Item(2000003, 1000));
+		playerInventoryItems.addItem(new Item(2000011, 1000));
+		playerInventoryItems.addItem(new Item(2000012, 1000));
 		playerInventoryItems.addItem(new Item(2100000, 100));
 
 		return;
@@ -7177,6 +7357,74 @@ void saveConfig()
 
 #pragma region Rendering
 
+#pragma region Enemy Item Dropping
+
+// use unordered_map<int, entry> for mob-specific droptables, i used this for simplicity
+std::vector<std::unique_ptr<EnemyDropEntry>> enemyDropEntries;
+
+void addEnemyDropEntry(int itemId, int chance, int minimum, int maximum) { enemyDropEntries.push_back(std::unique_ptr<EnemyDropEntry>(new EnemyDropEntry(itemId, chance, minimum, maximum))); }
+
+void addEnemyDropEntry(int itemId, int chance) { addEnemyDropEntry(itemId, chance, 1, 1); }
+
+class DroppedItem
+{
+private:
+	std::unique_ptr<Item> mItem;
+	glm::vec3 mPosition;
+	long long mDropTime;
+
+public:
+	DroppedItem(int id, const glm::vec3& pos) : mItem(new Item(id)), mPosition(pos), mDropTime(Tools::currentTimeMillis()) {}
+	DroppedItem(Item* item, const glm::vec3& pos) : mItem(item), mPosition(pos), mDropTime(Tools::currentTimeMillis()) {}
+
+	const glm::vec3& getPosition() const { return mPosition; }
+	Item* releaseItem() { return mItem.release(); }
+
+	void draw()
+	{
+		float flareFactor = glm::mix(0.0f, 3.141592f, (float)((Tools::currentTimeMillis() - mDropTime) % 4500) / 4500.0f);
+
+		glColor3f(0.5f, 0.5f, 0.5f);
+		glPushMatrix();
+		glTranslatef(mPosition.x, mPosition.y + 0.25f + (sinf(flareFactor) / 2.0f), mPosition.z); // move to correct location
+		glTranslatef(0.0f, 0.5f, 0.0f); // raise above ground offset
+		glScalef(0.021f, 0.021f, 0.021f); // resizing
+		glRotatef(180.0f, 1.0f, 0.0f, 0.0f); // vertical flip
+		glRotatef(flareFactor * 2.0f * 57.2958f, 0.0f, 1.0f, 0.0f); // flare rotate
+		glTranslatef(-24.0f, 0.0f, 0.0f); // center for rotation
+		//glutSolidCube(0.25f);
+		getItemInfo(mItem->getItemId())->drawIcon();
+		glPopMatrix();
+	}
+};
+
+std::vector<std::unique_ptr<DroppedItem>> droppedItems;
+
+class EnemyDropItemListener : public ICombatEntityListener
+{
+public:
+	virtual void onKilled(CombatEntity* entity)
+	{
+		for (auto& entry : enemyDropEntries)
+		{
+			if (getRandomInt(0, 999999) < entry->getChance())
+			{
+				Item* dropped = 0;
+
+				if (entry->getItemId() == 0) {} // reserved for currency
+				else if (getItemInventoryType(entry->getItemId()) == InventoryType::EQUIP) { dropped = randomizeStats(createEquipById(entry->getItemId())); }
+				else { dropped = new Item(entry->getItemId(), getRandomInt(entry->getMinimum(), entry->getMaximum())); }
+
+				droppedItems.push_back(std::unique_ptr<DroppedItem>(new DroppedItem(dropped, ((Enemy*)entity)->getPosition())));
+			}
+		}
+	}
+};
+
+std::unique_ptr<ICombatEntityListener> enemyDropItemListener;
+
+#pragma endregion
+
 #pragma region Enemy Wave Management
 
 int currentWave = 0;
@@ -7261,6 +7509,22 @@ public:
 		enemies.clear();
 		for (auto& i : spawnPoints) { i->reset(); }
 		//droppedItems.clear();
+		glm::vec3 playerPos(cx, cy, cz);
+		if (!dangerousWildBorder->containsPoint(playerPos)) // item loss if death occurs in the dangerous wild
+		{
+			for (short i = 1; i < playerInventoryItems.getSlotLimit(); i++)
+			{
+				if (playerInventoryItems.getItem(i) == 0) { continue; }
+				droppedItems.push_back(std::unique_ptr<DroppedItem>(new DroppedItem(playerInventoryItems.releaseSlot(i), playerPos)));
+			}
+
+			for (short i = 1; i < playerEquipmentItems.getSlotLimit(); i++)
+			{
+				if (playerEquipmentItems.getItem(i) == 0) { continue; }
+				droppedItems.push_back(std::unique_ptr<DroppedItem>(new DroppedItem(playerEquipmentItems.releaseSlot(i), playerPos)));
+			}
+		}
+		// TODO: change player position to some town location or something here... otherwise they respawn exactly where they died.
 		playerEntity->setHP(5);
 		showDialogueWindow(new WavesFailedDialogueWindow());
 		playerDeaths++;
@@ -7280,53 +7544,6 @@ void updateWaveTransition()
 		getUIWindowByTitle("Shop")->setVisible(false);
 	}
 }
-
-#pragma endregion
-
-#pragma region Enemy Item Dropping
-
-class DroppedItem
-{
-private:
-	std::unique_ptr<Item> mItem;
-	glm::vec3 mPosition;
-	long long mDropTime;
-
-public:
-	DroppedItem(int id, const glm::vec3& pos) : mItem(new Item(id)), mPosition(pos), mDropTime(Tools::currentTimeMillis()) {}
-	DroppedItem(Item* item, const glm::vec3& pos) : mItem(item), mPosition(pos), mDropTime(Tools::currentTimeMillis()) {}
-
-	const glm::vec3& getPosition() const { return mPosition; }
-	Item* releaseItem() { return mItem.release(); }
-
-	void draw()
-	{
-		float flareFactor = glm::mix(0.0f, 3.141592f, (float)((Tools::currentTimeMillis() - mDropTime) % 4500) / 4500.0f);
-
-		glColor3f(0.5f, 0.5f, 0.5f);
-		glPushMatrix();
-		glTranslatef(mPosition.x, mPosition.y + 0.25f + (sinf(flareFactor) / 2.0f), mPosition.z);
-		glRotatef(flareFactor * 57.2958f, 0.0f, 1.0f, 0.0f);
-		glutSolidCube(0.25f);
-		glPopMatrix();
-	}
-};
-
-std::vector<std::unique_ptr<DroppedItem>> droppedItems;
-
-class EnemyDropItemListener : public ICombatEntityListener
-{
-public:
-	virtual void onKilled(CombatEntity* entity)
-	{
-		if (randomNumber(0, 100) > 50)
-		{
-			droppedItems.push_back(std::unique_ptr<DroppedItem>(new DroppedItem(1, ((Enemy*)entity)->getPosition())));
-		}
-	}
-};
-
-std::unique_ptr<ICombatEntityListener> enemyDropItemListener;
 
 #pragma endregion
 
@@ -7451,7 +7668,8 @@ void loadNpcChunks(LoadedNPC* npc)
 
 void loadTown(const glm::ivec3& pos, const glm::ivec3& trainingGroundOffset, const std::string& name)
 {
-	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(pos.x, pos.z, 1)));
+	// TODO: dungeon theme shouldn't be random
+	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(pos.x, pos.z, 1, getRandomInt(1, 3))));
 	addPortal(pos.x + 1024 - 20, 0, pos.z + 1024 - 20, name + " Portal");
 	loadNPC(3, glm::vec3(pos.x + 1024 - 40, 0, pos.z + 1024 - 40));
 
@@ -7483,14 +7701,18 @@ void loadGameMap()
 	glm::ivec3 pvox(getPlayerPositionVoxelPos());
 	cy = (float)(getHighestVoxelAt(pvox.x, pvox.z) + 1);
 
-	// add land ownership start boundary
-	landOwnershipBorder = new VisibleRegionBorder(glm::vec3(-2048, 0, -2048), glm::vec3(3072, 1024, 3072));
+	// add land ownership start boundary (land ownership possible past this point)
+	landOwnershipBorder = new VisibleRegionBorder(glm::vec3(-2048, 0, -2048), glm::vec3(4096, 1024, 4096));
 	landOwnershipBorder->setColor(0.0f, 0.8f, 0.0f, 0.5f);
 	addVisibleRegionBorder(landOwnershipBorder);
-	// add wilderness start boundary
-	wildernessBorder = new VisibleRegionBorder(glm::vec3(-10240, 0, -10240), glm::vec3(20480, 1024, 20480));
+	// add wilderness start boundary (pvp enabled past this point)
+	wildernessBorder = new VisibleRegionBorder(glm::vec3(-4096, 0, -4096), glm::vec3(8192, 1024, 8192));
 	wildernessBorder->setColor(0.8f, 0.0f, 0.0f, 0.5f);
 	addVisibleRegionBorder(wildernessBorder);
+	// add dangerous wild start boundary (item loss on death past this point)
+	dangerousWildBorder = new VisibleRegionBorder(glm::vec3(-8192, 0, -8192), glm::vec3(16384, 1024, 16384));
+	dangerousWildBorder->setColor(0.45f, 0.0f, 0.0f, 0.75f);
+	addVisibleRegionBorder(dangerousWildBorder);
 }
 
 void updateDungeons()
@@ -8097,7 +8319,10 @@ int main(int argc, char** argv)
 	registerItem(1492005, new Item_PowerCharger());
 	registerItem(1492006, new Item_BlastCharger());
 	registerItem(2000001, new Item_RedPotion());
-	registerItem(2000002, new Item_BluePotion());
+	registerItem(2000002, new Item_OrangePotion());
+	registerItem(2000003, new Item_WhitePotion());
+	registerItem(2000011, new Item_BluePotion());
+	registerItem(2000012, new Item_ManaElixir());
 	registerItem(2100000, new Item_ChunkClaimer());
 
 	// add UI windows
@@ -8153,6 +8378,20 @@ int main(int argc, char** argv)
 	registerBiomeAttributes(BiomeType::JUNGLE, 256, 256, 256, 0, 15, 0, 75, 0, 15, true);
 	registerBiomeAttributes(BiomeType::DESERT, 2048, 128, 2048, 232, 232, 232, 232, 155, 221, false);
 	registerBiomeAttributes(BiomeType::MOUNTAINS, 32, 2048, 32, 112, 183, 94, 153, 68, 111, false);
+
+	// load enemy drop entries (currently assumes all drops are global)
+	addEnemyDropEntry(1492001, 100000);
+	addEnemyDropEntry(1492002, 100000);
+	addEnemyDropEntry(1492003, 100000);
+	addEnemyDropEntry(1492004, 100000);
+	addEnemyDropEntry(1492005, 100000);
+	addEnemyDropEntry(1492006, 100000);
+	addEnemyDropEntry(2000001, 300000, 1, 3);
+	addEnemyDropEntry(2000002, 300000, 1, 3);
+	addEnemyDropEntry(2000003, 300000, 1, 3);
+	addEnemyDropEntry(2000011, 300000, 1, 3);
+	addEnemyDropEntry(2000012, 300000, 1, 3);
+	addEnemyDropEntry(2100000, 50000);
 
 	// load map
 	loadGameMap();

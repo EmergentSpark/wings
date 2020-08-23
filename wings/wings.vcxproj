@@ -147,6 +147,7 @@
     <ClCompile Include="EntryPoint.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="EnemyDropEntry.hpp" />
     <ClInclude Include="PerlinNoise.hpp" />
     <ClInclude Include="XMLParser.hpp" />
   </ItemGroup>

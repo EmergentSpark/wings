@@ -27,19 +27,21 @@ left/right strafing, skill window icons, keybinding skills, keybinding items, tr
 v8 (19/08/2020):
 biomes, equipment stat bonuses, item tooltips on all item display ui windows, mob scaling, dungeon difficulty multiplier
 
+v9 (23/08/2020):
+mob drop diversity, a few more mobs, different dungeon themes, wilderness tier separation, item drop on death at second wilderness tier,
+actual item icons display for drops, potion tiers
+
 DONE BUT DISABLED:
 Maple map XML wz foothold and layout voxel mapping with depth expansion and dynamic noise, portals, switching maps, ropes/ladders (render only)
 
 CORE TODO:
-aug 20 - wave boss, mob drop diversity, a few more mobs, different dungeon themes
-aug 21 - buildable area terrain specialization, wilderness area terrain specialization
-aug 22 - periodic random wilderness town spawns, wilderness terrain periodic regeneration, increased dungeon difficulty based on distance from base towns
-aug 23 - potion tiers (refer to maple), a few more more skills, skill scaling
-aug 24 - expand base town set structure and content, add mob towers w/ level tiers (progression & growth mechanics up to very high lvls)
-aug 25 - land ownership expansion, land ownership expiration, land ownership duration extension
-aug 26 - buffs, debuffs, stunning, snaring, slowing, mob stat regen
+aug 24 - wave boss, skill scaling
+aug 26 - periodic random wilderness town spawns, wilderness terrain periodic regeneration, increased dungeon difficulty based on distance from base towns
+aug 28 - expand base town set structure and content, add mob towers w/ level tiers (progression & growth mechanics up to very high lvls)
+aug 30 - land ownership expansion, land ownership expiration, land ownership duration extension
 
 BONUS TODO:
+buffs, debuffs, stunning, snaring, slowing, mob stat regen
 inventory sorting, target location/object tracking
 tutorial npc
 minecraft texture pack support
