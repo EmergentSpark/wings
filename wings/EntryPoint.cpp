@@ -212,6 +212,12 @@ public:
 		assert(mRegion.getHeight() > 0);
 		assert(mRegion.getDepth() > 0);
 
+		reset();
+	}
+
+	void reset()
+	{
+		if (mData) { delete mData; }
 		mData = new VoxelType[mRegion.getWidth() * mRegion.getHeight() * mRegion.getDepth()];
 	}
 
@@ -259,7 +265,7 @@ public:
 
 private:
 	VolumeRegion mRegion;
-	VoxelType* mData;
+	VoxelType* mData = 0;
 };
 
 bool isQuadNeeded(VoxelType back, VoxelType front, glm::vec3& materialToUse)
@@ -2631,6 +2637,10 @@ struct VolumeChunk
 
 		glPopMatrix();
 	}
+
+	long long mLastVisited = 0; // time the chunk was last unloaded by all visitors
+	bool mDungeon = false; // indicates the chunk was generated as part of a dungeon
+	bool mNeedsRegeneration = false; // mark an existing chunk for regeneration using the chunk generation algorithm
 };
 
 struct ChunkMinimapColormap
@@ -2764,10 +2774,34 @@ void chunkSurfaceExtractProc(VolumeChunk* chunk)
 	activeSurfaceExtractionThreads--;
 }
 
+void onChunkLoad(const glm::ivec3& pos, VolumeChunk* chunk)
+{
+	// regen ex-dungeon chunks after 24 hours of inactivity. technically, this should check if the dungeon has been completed yet or not
+	if (chunk->mLastVisited + (1000 * 60 * 60 * 24) < Tools::currentTimeMillis() && chunk->mDungeon)
+	{
+		chunk->mNeedsRegeneration = true;
+		chunk->mVolume->reset();
+	}
+
+	printf("onChunkLoad(%d, %d, %d)\n", pos.x, pos.y, pos.z);
+}
+
+void onChunkUnload(const glm::ivec3& pos, VolumeChunk* chunk)
+{
+	chunk->mLastVisited = Tools::currentTimeMillis();
+
+	printf("onChunkUnload(%d, %d, %d)\n", pos.x, pos.y, pos.z);
+}
+
+std::unordered_map<glm::ivec3, VolumeChunk*, KeyHash_GLMIVec3, KeyEqual_GLMIVec3> lastRenderChunks;
+
 void renderChunks()
 {
+	std::unordered_map<glm::ivec3, VolumeChunk*, KeyHash_GLMIVec3, KeyEqual_GLMIVec3> renderedChunks;
+
 	glm::vec3 camPos(cx, 0, cz);
 
+	// go through all loaded chunks to render any within the render distance
 	for (auto it = mChunks.begin(); it != mChunks.end(); it++)
 	{
 		VolumeChunk* chunk = it->second.get();
@@ -2775,6 +2809,7 @@ void renderChunks()
 		// apply max render distance
 		const glm::ivec3& corner = chunk->mVolume.get()->getEnclosingRegion().getLowerCorner();
 		glm::vec3 volumeCenterWorldPos(corner.x + 8, corner.y + 8, corner.z + 8);
+
 		if (glm::distance(camPos, volumeCenterWorldPos) >= (volumeRenderDistance * 16)) { continue; }
 
 		// update and render chunk geometry
@@ -2796,7 +2831,26 @@ void renderChunks()
 		}
 
 		chunk->render();
+
+		renderedChunks[it->first] = it->second.get();
 	}
+
+	// go through all the rendered chunks to determine which were recently loaded
+	for (auto& chunk : renderedChunks)
+	{
+		auto exist = lastRenderChunks.find(chunk.first);
+		if (exist == lastRenderChunks.end()) { onChunkLoad(chunk.first, chunk.second); }
+	}
+
+	// go through all the chunks rendered last call to determine which were recently unloaded
+	for (auto& chunk : lastRenderChunks)
+	{
+		auto exist = renderedChunks.find(chunk.first);
+		if (exist == renderedChunks.end()) { onChunkUnload(chunk.first, chunk.second); }
+	}
+
+	// update the recently rendered chunk list
+	lastRenderChunks = renderedChunks;
 }
 
 glm::ivec3 getVoxelChunkPos(int x, int y, int z) { return glm::ivec3(std::floorf((float)x / 16.0f), std::floorf((float)y / 16.0f), std::floorf((float)z / 16.0f)); }
@@ -4293,7 +4347,7 @@ public:
 	virtual std::string getName() = 0;
 	virtual std::string getDescription() { return "No description."; }
 	virtual void drawIcon() = 0;
-	virtual void onUse() {}
+	virtual void onUse(CombatEntity* user) {}
 };
 
 class Item_BasicRaycaster : public ItemInfo
@@ -4398,9 +4452,9 @@ public:
 		glColor3f(BYTE_TO_FLOAT_COLOR(142), BYTE_TO_FLOAT_COLOR(42), BYTE_TO_FLOAT_COLOR(54));
 		drawQuad2D(14, 16, 20, 18);
 	}
-	virtual void onUse()
+	virtual void onUse(CombatEntity* user)
 	{
-		playerEntity->setHP(playerEntity->getHP() + 10);
+		user->setHP(playerEntity->getHP() + 10);
 	}
 };
 
@@ -4422,9 +4476,9 @@ public:
 		glColor3f(BYTE_TO_FLOAT_COLOR(242), BYTE_TO_FLOAT_COLOR(137), BYTE_TO_FLOAT_COLOR(58));
 		drawQuad2D(14, 16, 20, 18);
 	}
-	virtual void onUse()
+	virtual void onUse(CombatEntity* user)
 	{
-		playerEntity->setHP(playerEntity->getHP() + 50);
+		user->setHP(playerEntity->getHP() + 50);
 	}
 };
 
@@ -4446,9 +4500,9 @@ public:
 		glColor3f(BYTE_TO_FLOAT_COLOR(239), BYTE_TO_FLOAT_COLOR(237), BYTE_TO_FLOAT_COLOR(227));
 		drawQuad2D(14, 16, 20, 18);
 	}
-	virtual void onUse()
+	virtual void onUse(CombatEntity* user)
 	{
-		playerEntity->setHP(playerEntity->getHP() + 100);
+		user->setHP(playerEntity->getHP() + 100);
 	}
 };
 
@@ -4470,9 +4524,9 @@ public:
 		glColor3f(BYTE_TO_FLOAT_COLOR(50), BYTE_TO_FLOAT_COLOR(80), BYTE_TO_FLOAT_COLOR(140));
 		drawQuad2D(14, 16, 20, 18);
 	}
-	virtual void onUse()
+	virtual void onUse(CombatEntity* user)
 	{
-		playerEntity->setMP(playerEntity->getMP() + 10);
+		user->setMP(playerEntity->getMP() + 10);
 	}
 };
 
@@ -4494,9 +4548,9 @@ public:
 		glColor3f(BYTE_TO_FLOAT_COLOR(11), BYTE_TO_FLOAT_COLOR(19), BYTE_TO_FLOAT_COLOR(237));
 		drawQuad2D(14, 16, 20, 18);
 	}
-	virtual void onUse()
+	virtual void onUse(CombatEntity* user)
 	{
-		playerEntity->setMP(playerEntity->getMP() + 100);
+		user->setMP(playerEntity->getMP() + 100);
 	}
 };
 
@@ -4601,7 +4655,12 @@ public:
 
 std::vector<std::unique_ptr<Portal>> portals;
 
-void addPortal(int x, int y, int z, const std::string& name) { portals.push_back(std::unique_ptr<Portal>(new Portal(glm::ivec3(x, y, z), name))); }
+Portal* addPortal(int x, int y, int z, const std::string& name)
+{
+	Portal* ret = new Portal(glm::ivec3(x, y, z), name);
+	portals.push_back(std::unique_ptr<Portal>(ret));
+	return ret;
+}
 
 bool isPlayerNearAnyPortal()
 {
@@ -4689,6 +4748,8 @@ protected:
 	virtual void click(int x, int y) {}
 	virtual void mouseMove(int x, int y) {}
 	virtual void mouseDrag(int x, int y) {}
+
+	glm::ivec2 getClientAreaMousePos() { return glm::ivec2(currentMousePos.x - mPosition.x - mClientAreaOffset.x, currentMousePos.y - mPosition.y - mClientAreaOffset.y); }
 
 public:
 	UIWindow(const glm::ivec2& pos, const glm::ivec2& size, const std::string& title) : mPosition(pos), mSize(size), mTitle(title) {}
@@ -4940,7 +5001,7 @@ protected:
 					}
 					else if (type == InventoryType::USE)
 					{
-						getItemInfo(item->getItemId())->onUse();
+						getItemInfo(item->getItemId())->onUse(playerEntity);
 						playerInventoryItems.removeItem(slot);
 					}
 				}
@@ -5664,13 +5725,14 @@ private:
 	glm::ivec2 mDisplayOffset;
 	glm::ivec2 mDragStart;
 	glm::ivec2 mDragDisplayOffset;
+	glm::ivec2 mDisplaySize;
 
 protected:
 	virtual void draw()
 	{
-		for (int x = 0; x < 670; x++)
+		for (int x = 0; x < mDisplaySize.x; x++)
 		{
-			for (int z = 0; z < 500; z++)
+			for (int z = 0; z < mDisplaySize.y; z++)
 			{
 				const VoxelType& type = getVoxelMinimapColor(mDisplayOffset.x + x, mDisplayOffset.y + z);
 				if (type.a != 0)
@@ -5695,8 +5757,18 @@ protected:
 		quad(10 + -mDisplayOffset.x + (int)cx - 5, 10 + -mDisplayOffset.y + (int)cz - 5, 11, 11);
 
 		// list all the portals on the side with their position
+		glm::ivec2 mousePos(getClientAreaMousePos());
 		for (unsigned int i = 0; i < portals.size(); i++)
 		{
+			glm::ivec2 rectLower(690, 16 + (i * 20));
+			glm::ivec2 rectHigher(450, 18);
+			rectHigher += rectLower;
+			if (mousePos.x >= rectLower.x && mousePos.x <= rectHigher.x && mousePos.y >= rectLower.y && mousePos.y <= rectHigher.y)
+			{
+				glColor4f(0.5f, 0.5f, 0.5f, 0.5f);
+				quad(rectLower.x, rectLower.y, 450, 18);
+			}
+			glColor3f(0.0f, 0.0f, 0.0f);
 			text(690, 30 + (i * 20), GLUT_BITMAP_HELVETICA_18, portals[i]->getName() + " (" + to_string(portals[i]->getPosition()) + ")");
 		}
 
@@ -5706,6 +5778,7 @@ protected:
 
 	virtual void click(int x, int y)
 	{
+		// check for portal clicks on the map
 		for (auto& portal : portals)
 		{
 			glm::ivec2 rectLower(10 + -mDisplayOffset.x + portal->getPosition().x - 5, 10 + -mDisplayOffset.y + portal->getPosition().z - 5);
@@ -5719,6 +5792,20 @@ protected:
 			}
 		}
 
+		// check for portal name clicks
+		for (unsigned int i = 0; i < portals.size(); i++)
+		{
+			glm::ivec2 rectLower(690, 16 + (i * 20));
+			glm::ivec2 rectHigher(450, 18);
+			rectHigher += rectLower;
+			if (x >= rectLower.x && x <= rectHigher.x && y >= rectLower.y && y <= rectHigher.y)
+			{
+				mDisplayOffset = glm::ivec2(portals[i]->getPosition().x - (mDisplaySize.x / 2), portals[i]->getPosition().z - (mDisplaySize.y / 2));
+				break;
+			}
+		}
+
+		// update mouse dragging values
 		mDragStart.x = x;
 		mDragStart.y = y;
 		mDragDisplayOffset = mDisplayOffset;
@@ -5731,7 +5818,7 @@ protected:
 	}
 
 public:
-	WorldMapWindow() : UIWindow(glm::ivec2(200, 100), glm::ivec2(1200, 580), "World Map"), mDisplayOffset(0, 0) {}
+	WorldMapWindow() : UIWindow(glm::ivec2(200, 100), glm::ivec2(1200, 580), "World Map"), mDisplayOffset(0, 0), mDisplaySize(670, 500) {}
 };
 
 class FuckYouWindow : public UIWindow
@@ -6466,7 +6553,12 @@ struct LoadedNPC
 
 std::vector<std::unique_ptr<LoadedNPC>> loadedNPCs;
 
-void loadNPC(int id, const glm::vec3& pos) { loadedNPCs.push_back(std::unique_ptr<LoadedNPC>(new LoadedNPC(id, pos))); }
+LoadedNPC* loadNPC(int id, const glm::vec3& pos)
+{
+	LoadedNPC* ret = new LoadedNPC(id, pos);
+	loadedNPCs.push_back(std::unique_ptr<LoadedNPC>(ret));
+	return ret;
+}
 
 void unloadNPC(int id)
 {
@@ -6990,9 +7082,14 @@ public:
 			// also add a tree in the center
 			setTree(chunkStart.x + getRandomInt(3, 10), 0, chunkStart.z + getRandomInt(3, 10));
 		}
+
+		// mark as a dungeon generated chunk
+		mChunks[glm::ivec3(x, y, z)]->mDungeon = true;
 	}
 
 	int getDifficulty() { return mDifficulty; }
+
+	const glm::ivec3& getPosition() const { return mPosition; }
 };
 
 #pragma region Biomes
@@ -7111,7 +7208,7 @@ public:
 		glColor3f(BYTE_TO_FLOAT_COLOR(50), BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(140));
 		drawQuad2D(14, 16, 20, 18);
 	}
-	virtual void onUse()
+	virtual void onUse(CombatEntity* user)
 	{
 		glm::ivec3 chunkPos(getVoxelChunkPos(getPlayerPositionVoxelPos()));
 		bool success = canClaimChunk(chunkPos);
@@ -7587,8 +7684,77 @@ void initNoiseChunk(int x, int y, int z)
 	}
 }
 
+// load portal heights
+void loadPortalChunks(Portal* portal)
+{
+	const glm::ivec3& basePos = portal->getPosition();
+	glm::ivec3 chunkPos = getVoxelChunkPos(basePos);
+	// current noise algo usage would generate max 3 chunk height noise
+	initNoiseChunk(chunkPos.x, 0, chunkPos.z);
+	initNoiseChunk(chunkPos.x, 1, chunkPos.z);
+	initNoiseChunk(chunkPos.x, 2, chunkPos.z);
+	// auto adjust height (maybe a setting to toggle in the future?)
+	portal->setPosition(glm::ivec3(basePos.x, getHighestVoxelAt(basePos.x, basePos.z) + 1, basePos.z));
+}
+
+// load npc heights
+void loadNpcChunks(LoadedNPC* npc)
+{
+	const glm::vec3& basePos = npc->position;
+	glm::ivec3 chunkPos = getVoxelChunkPos(glm::ivec3((int)basePos.x, (int)basePos.y, (int)basePos.z));
+	// current noise algo usage would generate max 3 chunk height noise
+	initNoiseChunk(chunkPos.x, 0, chunkPos.z);
+	initNoiseChunk(chunkPos.x, 1, chunkPos.z);
+	initNoiseChunk(chunkPos.x, 2, chunkPos.z);
+	// auto adjust npc height (maybe a setting to toggle in the future?)
+	npc->position.y = (float)(getHighestVoxelAt((int)basePos.x, (int)basePos.z) + 1);
+}
+
+void loadTown(const glm::ivec3& pos, const glm::ivec3& trainingGroundOffset, const std::string& name, bool npcs, int dungeonDifficulty)
+{
+	// TODO: dungeon theme shouldn't be random
+	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(pos.x, pos.z, dungeonDifficulty, getRandomInt(1, 3))));
+
+	Portal* portal = addPortal(pos.x + 1024 - 20, 0, pos.z + 1024 - 20, name + " Portal");
+	loadPortalChunks(portal);
+
+	// wilderness towns don't load npcs
+	if (npcs)
+	{
+		LoadedNPC* npc = loadNPC(3, glm::vec3(pos.x + 1024 - 40, 0, pos.z + 1024 - 40));
+		loadNpcChunks(npc);
+	}
+
+	// potential training ground
+	if (!(trainingGroundOffset.x == 0 && trainingGroundOffset.y == 0 && trainingGroundOffset.z == 0))
+	{
+		Portal* trainingPortal = addPortal(pos.x + (trainingGroundOffset.x * 1024) + 20, pos.y + (trainingGroundOffset.y * 1024), pos.z + (trainingGroundOffset.z * 1024) + 20, name + " Training Ground Portal");
+		loadPortalChunks(trainingPortal);
+	}
+}
+
 void loadNewChunks()
 {
+	// check for periodic dungeon spawns in the dangerous wild
+	glm::vec3 playerPos(cx - 1024, 0, cz - 1024);
+	if (!dangerousWildBorder->containsPoint(playerPos))
+	{
+		bool tooClose = false;
+		for (auto& dungeon : dungeons)
+		{
+			// distance complains without floating point vectors............
+			if (glm::distance(playerPos, glm::vec3(dungeon->getPosition())) < 4096) { tooClose = true; break; }
+		}
+
+		if (!tooClose && getRandomInt(0, 5) > 3)
+		{
+			int difficulty = (int)std::floorf(glm::distance(glm::vec3(std::abs(playerPos.x), 0.0f, std::abs(playerPos.z)), glm::vec3()) / 2048.0f);
+			printf("Generating periodic wilderness dungeon at (%d, %d, %d) with difficulty %d\n", (int)playerPos.x, (int)playerPos.y, (int)playerPos.z, difficulty);
+			loadTown(playerPos, glm::ivec3(), "Random Dungeon " + std::to_string(getRandomInt()), false, difficulty);
+		}
+	}
+
+	// handle new chunk loading / existing chunk processing
 	glm::ivec3 playerVoxel(getPlayerPositionVoxelPos());
 	glm::ivec3 curChunk(getVoxelChunkPos(playerVoxel.x, playerVoxel.y, playerVoxel.z));
 
@@ -7602,7 +7768,8 @@ void loadNewChunks()
 			for (int z = curChunk.z - volumeRenderDistance; z <= curChunk.z + volumeRenderDistance; z++)
 			{
 				// dynamically load terrain
-				if (mChunks.count(glm::ivec3(x, y, z)) == 0)
+				auto chunk = mChunks.find(glm::ivec3(x, y, z));
+				if (chunk == mChunks.end() || chunk->second->mNeedsRegeneration)
 				{
 					// don't auto-generate noise on dungeon terrain, use dungeon chunk generation instead
 					Dungeon* chunkDungeon = getChunkDungeon(x, y, z);
@@ -7642,64 +7809,14 @@ void loadNewChunks()
 	}
 }
 
-void loadPortalChunks(Portal* portal)
-{
-	const glm::ivec3& basePos = portal->getPosition();
-	glm::ivec3 chunkPos = getVoxelChunkPos(basePos);
-	// current noise algo usage would generate max 3 chunk height noise
-	initNoiseChunk(chunkPos.x, 0, chunkPos.z);
-	initNoiseChunk(chunkPos.x, 1, chunkPos.z);
-	initNoiseChunk(chunkPos.x, 2, chunkPos.z);
-	// auto adjust height (maybe a setting to toggle in the future?)
-	portal->setPosition(glm::ivec3(basePos.x, getHighestVoxelAt(basePos.x, basePos.z) + 1, basePos.z));
-}
-
-void loadNpcChunks(LoadedNPC* npc)
-{
-	const glm::vec3& basePos = npc->position;
-	glm::ivec3 chunkPos = getVoxelChunkPos(glm::ivec3((int)basePos.x, (int)basePos.y, (int)basePos.z));
-	// current noise algo usage would generate max 3 chunk height noise
-	initNoiseChunk(chunkPos.x, 0, chunkPos.z);
-	initNoiseChunk(chunkPos.x, 1, chunkPos.z);
-	initNoiseChunk(chunkPos.x, 2, chunkPos.z);
-	// auto adjust npc height (maybe a setting to toggle in the future?)
-	npc->position.y = (float)(getHighestVoxelAt((int)basePos.x, (int)basePos.z) + 1);
-}
-
-void loadTown(const glm::ivec3& pos, const glm::ivec3& trainingGroundOffset, const std::string& name)
-{
-	// TODO: dungeon theme shouldn't be random
-	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(pos.x, pos.z, 1, getRandomInt(1, 3))));
-	addPortal(pos.x + 1024 - 20, 0, pos.z + 1024 - 20, name + " Portal");
-	loadNPC(3, glm::vec3(pos.x + 1024 - 40, 0, pos.z + 1024 - 40));
-
-	if (!(trainingGroundOffset.x == 0 && trainingGroundOffset.y == 0 && trainingGroundOffset.z == 0))
-	{
-		addPortal(pos.x + (trainingGroundOffset.x * 1024) + 20, pos.y + (trainingGroundOffset.y * 1024), pos.z + (trainingGroundOffset.z * 1024) + 20, name + " Training Ground Portal");
-	}
-}
-
 void loadGameMap()
 {
 	// load base towns
-	loadTown(glm::ivec3(-1024, 0, -1024), glm::ivec3(), "Starting Town");
-	loadTown(glm::ivec3(-2048, 0, -2048), glm::ivec3(1, 0, 0), "Town 1");
-	loadTown(glm::ivec3(    0, 0, -2048), glm::ivec3(0, 0, 1), "Town 2");
-	loadTown(glm::ivec3(-1024, 0,     0), glm::ivec3(-1, 0, 0), "Town 3");
-	loadTown(glm::ivec3(-2048, 0,     0), glm::ivec3(0, 0, -1), "Town 4");
-
-	// load portal heights
-	for (auto& portal : portals) { loadPortalChunks(portal.get()); }
-
-	// load npc heights
-	for (auto& npc : loadedNPCs) { loadNpcChunks(npc.get()); }
-
-	// load surrounding chunks (before adjusting player y)
-	loadNewChunks();
-
-	// move player nicely to the proper height
-	glm::ivec3 pvox(getPlayerPositionVoxelPos());
-	cy = (float)(getHighestVoxelAt(pvox.x, pvox.z) + 1);
+	loadTown(glm::ivec3(-1024, 0, -1024), glm::ivec3(), "Starting Town", true, 1);
+	loadTown(glm::ivec3(-2048, 0, -2048), glm::ivec3(1, 0, 0), "Town 1", true, 2);
+	loadTown(glm::ivec3(    0, 0, -2048), glm::ivec3(0, 0, 1), "Town 2", true, 3);
+	loadTown(glm::ivec3(-1024, 0,     0), glm::ivec3(-1, 0, 0), "Town 3", true, 4);
+	loadTown(glm::ivec3(-2048, 0,     0), glm::ivec3(0, 0, -1), "Town 4", true, 5);
 
 	// add land ownership start boundary (land ownership possible past this point)
 	landOwnershipBorder = new VisibleRegionBorder(glm::vec3(-2048, 0, -2048), glm::vec3(4096, 1024, 4096));
@@ -7713,6 +7830,13 @@ void loadGameMap()
 	dangerousWildBorder = new VisibleRegionBorder(glm::vec3(-8192, 0, -8192), glm::vec3(16384, 1024, 16384));
 	dangerousWildBorder->setColor(0.45f, 0.0f, 0.0f, 0.75f);
 	addVisibleRegionBorder(dangerousWildBorder);
+
+	// load surrounding chunks (before adjusting player y)
+	loadNewChunks();
+
+	// move player nicely to the proper height
+	glm::ivec3 pvox(getPlayerPositionVoxelPos());
+	cy = (float)(getHighestVoxelAt(pvox.x, pvox.z) + 1);
 }
 
 void updateDungeons()
@@ -8039,7 +8163,7 @@ void processNormalKeys(unsigned char key, int x, int y)
 			Item* item = playerInventoryItems.findById(keyIt->second.actionId);
 			if (item) // make sure player has at least 1 of the item in their inventory to use
 			{
-				getItemInfo(item->getItemId())->onUse();
+				getItemInfo(item->getItemId())->onUse(playerEntity);
 				playerInventoryItems.removeItem(item->getPosition());
 			}
 		}
