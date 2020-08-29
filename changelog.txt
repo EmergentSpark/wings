@@ -35,14 +35,17 @@ v10 (26/08/2020):
 periodic random wilderness town spawns, completed wilderness dungeon terrain periodic regeneration after prolonged chunk inactivity,
 increased dungeon difficulty based on distance from base towns, world map portal names clickable to shift map view
 
+v11 (29/08/2020):
+land ownership expiration, land ownership duration extension, land ownership information display, started massive code cleanup & organization
+
 DONE BUT DISABLED:
 Maple map XML wz foothold and layout voxel mapping with depth expansion and dynamic noise, portals, switching maps, ropes/ladders (render only)
 
 CORE TODO:
-aug 28 - expand base town set structure and content, add mob towers w/ level tiers (progression & growth mechanics up to very high lvls)
-aug 30 - land ownership expiration, land ownership duration extension
+finish massive code cleanup & organization
 
 BONUS TODO:
+expand base town set structure and content, add mob towers w/ level tiers (progression & growth mechanics up to very high lvls)
 wave boss, skill scaling
 buffs, debuffs, stunning, snaring, slowing, mob stat regen
 inventory sorting, target location/object tracking

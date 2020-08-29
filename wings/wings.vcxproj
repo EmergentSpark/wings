@@ -144,12 +144,41 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="EnemyInformationProvider.cpp" />
     <ClCompile Include="EntryPoint.cpp" />
+    <ClCompile Include="ItemInformationProvider.cpp" />
+    <ClCompile Include="NpcInformationProvider.cpp" />
+    <ClCompile Include="NpcManager.cpp" />
+    <ClCompile Include="Randomizer.cpp" />
+    <ClCompile Include="Renderer.cpp" />
+    <ClCompile Include="SkillInformationProvider.cpp" />
+    <ClCompile Include="UIWindow.cpp" />
+    <ClCompile Include="UIWindowManager.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="EnemyDropEntry.hpp" />
-    <ClInclude Include="PerlinNoise.hpp" />
-    <ClInclude Include="XMLParser.hpp" />
+    <ClInclude Include="AStarPathfinder.h" />
+    <ClInclude Include="AxisAlignedBoundingBox.h" />
+    <ClInclude Include="CombatEntity.h" />
+    <ClInclude Include="EnemyDropEntry.h" />
+    <ClInclude Include="EnemyInformationProvider.h" />
+    <ClInclude Include="Equip.h" />
+    <ClInclude Include="InventoryType.h" />
+    <ClInclude Include="Item.h" />
+    <ClInclude Include="ItemDisplayUIWindow.h" />
+    <ClInclude Include="ItemInfo.h" />
+    <ClInclude Include="ItemInformationProvider.h" />
+    <ClInclude Include="SkillInfo.h" />
+    <ClInclude Include="SkillInformationProvider.h" />
+    <ClInclude Include="VecUtil.h" />
+    <ClInclude Include="NpcInfo.h" />
+    <ClInclude Include="NpcInformationProvider.h" />
+    <ClInclude Include="NpcManager.h" />
+    <ClInclude Include="PerlinNoise.h" />
+    <ClInclude Include="Randomizer.h" />
+    <ClInclude Include="Renderer.h" />
+    <ClInclude Include="UIWindow.h" />
+    <ClInclude Include="UIWindowManager.h" />
+    <ClInclude Include="XMLParser.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

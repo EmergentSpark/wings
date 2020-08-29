@@ -24,16 +24,30 @@
 #include <iterator>
 #include <deque>
 #include <atomic>
-#include <random>
 
 #include <glm/vec3.hpp>
 #include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 #include <glm/geometric.hpp>
 
-#include "XMLParser.hpp"
-#include "PerlinNoise.hpp"
-#include "EnemyDropEntry.hpp"
+#include "XMLParser.h"
+#include "PerlinNoise.h"
+#include "EnemyDropEntry.h"
+#include "Renderer.h"
+#include "ItemInfo.h"
+#include "ItemInformationProvider.h"
+#include "InventoryType.h"
+#include "Item.h"
+#include "Equip.h"
+#include "AxisAlignedBoundingBox.h"
+#include "Randomizer.h"
+#include "AStarPathfinder.h"
+#include "EnemyInformationProvider.h"
+#include "NpcInformationProvider.h"
+#include "NpcManager.h"
+#include "UIWindowManager.h"
+#include "ItemDisplayUIWindow.h"
+#include "SkillInformationProvider.h"
 
 #pragma endregion
 
@@ -95,42 +109,9 @@ public:
 	const glm::vec3& getEnd() const { return mEnd; }
 };
 
-class AxisAlignedBoundingBox
-{
-private:
-	glm::vec3 mLowerCorner;
-	glm::vec3 mUpperCorner;
-
-public:
-	AxisAlignedBoundingBox(const glm::vec3& lower, const glm::vec3& higher) : mLowerCorner(lower), mUpperCorner(higher) {}
-
-	const glm::vec3& getLowerBound() const { return mLowerCorner; }
-	const glm::vec3& getHigherBound() const { return mUpperCorner; }
-
-	bool intersects(const AxisAlignedBoundingBox& b)
-	{
-		return (mLowerCorner.x <= b.mUpperCorner.x && mUpperCorner.x >= b.mLowerCorner.x) &&
-			(mLowerCorner.y <= b.mUpperCorner.y && mUpperCorner.y >= b.mLowerCorner.y) &&
-			(mLowerCorner.z <= b.mUpperCorner.z && mUpperCorner.z >= b.mLowerCorner.z);
-	}
-
-	const bool containsPoint(const glm::vec3& pos) const
-	{
-		return (pos.x <= mUpperCorner.x) // - boundary
-			&& (pos.y <= mUpperCorner.y) // - boundary
-			&& (pos.z <= mUpperCorner.z) // - boundary
-			&& (pos.x >= mLowerCorner.x) // + boundary
-			&& (pos.y >= mLowerCorner.y) // + boundary
-			&& (pos.z >= mLowerCorner.z); // + boundary
-	}
-};
-
 #pragma endregion
 
 #pragma region Voxel Engine
-
-template<typename T>
-constexpr auto BYTE_TO_FLOAT_COLOR(T b) { return b / 255.0f; }
 
 struct VoxelType
 {
@@ -146,7 +127,7 @@ public:
 	bool operator > (int i) { return getTotal() > i; }
 	bool operator == (int i) { return getTotal() == i; }
 
-	const glm::vec3 toVertexColor() const { return glm::vec3(BYTE_TO_FLOAT_COLOR(r), BYTE_TO_FLOAT_COLOR(g), BYTE_TO_FLOAT_COLOR(b)); }
+	const glm::vec3 toVertexColor() const { return glm::vec3(Renderer::BYTE_TO_FLOAT_COLOR(r), Renderer::BYTE_TO_FLOAT_COLOR(g), Renderer::BYTE_TO_FLOAT_COLOR(b)); }
 
 	const bool isAir() const { return a == 0; }
 
@@ -2402,50 +2383,6 @@ Ray unproject(const glm::ivec2& pos)
 	return ret;
 }
 
-/*
-GLUT_BITMAP_8_BY_13
-GLUT_BITMAP_9_BY_15
-GLUT_BITMAP_TIMES_ROMAN_10
-GLUT_BITMAP_TIMES_ROMAN_24
-GLUT_BITMAP_HELVETICA_10
-GLUT_BITMAP_HELVETICA_12
-GLUT_BITMAP_HELVETICA_18
-*/
-void renderSpacedBitmapString(float x, float y, int spacing, void* font, const char* string)
-{
-	glPushMatrix();
-	glLoadIdentity();
-
-	const char* c;
-	float x1 = x;
-
-	for (c = string; *c != '\0'; c++)
-	{
-		glRasterPos2f(x1, y);
-		glutBitmapCharacter(font, *c);
-		x1 = x1 + glutBitmapWidth(font, *c) + spacing;
-	}
-
-	glPopMatrix();
-}
-
-void renderString(int x, int y, void* font, const std::string& str) { renderSpacedBitmapString((float)x, (float)y, 0, font, str.c_str()); }
-
-int getSpacedStringWidth(int spacing, void* font, const char* string)
-{
-	int width = 0;
-	const char* c;
-
-	for (c = string; *c != '\0'; c++)
-	{
-		width += glutBitmapWidth(font, *c) + spacing;
-	}
-
-	return width;
-}
-
-int getStringWidth(void* font, const std::string& string) { return getSpacedStringWidth(0, font, string.c_str()); }
-
 void setOrthographicProjection() {
 
 	// switch to projection mode
@@ -2504,16 +2441,6 @@ void renderStrokeFontString(float x, float y, float z, void* font, const char* s
 	}
 
 	glPopMatrix();
-}
-
-void drawQuad2D(int x, int y, int width, int height)
-{
-	glBegin(GL_QUADS);
-	glVertex2i(x, y);
-	glVertex2i(x, y + height);
-	glVertex2i(x + width, y + height);
-	glVertex2i(x + width, y);
-	glEnd();
 }
 
 #pragma endregion
@@ -2641,6 +2568,11 @@ struct VolumeChunk
 	long long mLastVisited = 0; // time the chunk was last unloaded by all visitors
 	bool mDungeon = false; // indicates the chunk was generated as part of a dungeon
 	bool mNeedsRegeneration = false; // mark an existing chunk for regeneration using the chunk generation algorithm
+	int mOwnerId = 0; // if ownable, the owner's player id. singleplayer defaults to 1
+	long long mOwnershipStartTime = 0; // set to current time when initially claimed
+	long long mOwnershipDuration = 0; // extended upon claims
+
+	long long getRemainingOwnershipTime() { return (mOwnershipStartTime + mOwnershipDuration) - Tools::currentTimeMillis(); }
 };
 
 struct ChunkMinimapColormap
@@ -2790,6 +2722,13 @@ void onChunkUnload(const glm::ivec3& pos, VolumeChunk* chunk)
 {
 	chunk->mLastVisited = Tools::currentTimeMillis();
 
+	if (chunk->mOwnerId == 1 && chunk->getRemainingOwnershipTime() <= 0) // owner unloading expired chunks causes ownership loss
+	{
+		chunk->mOwnerId = 0;
+		chunk->mOwnershipStartTime = 0;
+		chunk->mOwnershipDuration = 0;
+	}
+
 	printf("onChunkUnload(%d, %d, %d)\n", pos.x, pos.y, pos.z);
 }
 
@@ -2862,15 +2801,6 @@ glm::vec3 chunkToWorldPos(const glm::ivec3& pos) { return glm::vec3(pos.x * 16, 
 #pragma endregion
 
 #pragma region Maple Map 3D Processing
-
-std::random_device rd;
-std::mt19937 mt(rd());
-
-int getRandomInt() { return std::uniform_int_distribution<int>()(mt); }
-
-int getRandomInt(int min, int max) { return std::uniform_int_distribution<int>(min, max)(mt); }
-
-double getRandomDouble() { return std::uniform_real_distribution<double>()(mt); }
 
 glm::vec3 charPos;
 
@@ -3056,14 +2986,14 @@ void drawLoadedMapleMapStatistics()
 	std::string spStr = "SpawnPoints: " + std::to_string(loadedMapleMap->getSpawnPoints().size());
 	std::string npStr = "NPCs: " + std::to_string(numNPCs);
 	std::string ldStr = "Ladders: " + std::to_string(loadedMapleMap->getLadders().size());
-	renderSpacedBitmapString(5, 50, 0, GLUT_BITMAP_HELVETICA_18, fhStr.c_str());
-	renderSpacedBitmapString(5, 70, 0, GLUT_BITMAP_HELVETICA_18, ptStr.c_str());
-	renderSpacedBitmapString(5, 90, 0, GLUT_BITMAP_HELVETICA_18, spStr.c_str());
-	renderSpacedBitmapString(5, 110, 0, GLUT_BITMAP_HELVETICA_18, npStr.c_str());
-	renderSpacedBitmapString(5, 130, 0, GLUT_BITMAP_HELVETICA_18, ldStr.c_str());
+	Renderer::renderString(5, 50, RenderFont::BITMAP_HELVETICA_18, fhStr);
+	Renderer::renderString(5, 70, RenderFont::BITMAP_HELVETICA_18, ptStr);
+	Renderer::renderString(5, 90, RenderFont::BITMAP_HELVETICA_18, spStr);
+	Renderer::renderString(5, 110, RenderFont::BITMAP_HELVETICA_18, npStr);
+	Renderer::renderString(5, 130, RenderFont::BITMAP_HELVETICA_18, ldStr);
 
 	std::string mnStr = loadedMapleMap->getStreetName() + ": " + loadedMapleMap->getMapName();
-	renderSpacedBitmapString(5, 170, 0, GLUT_BITMAP_HELVETICA_18, mnStr.c_str());
+	Renderer::renderString(5, 170, RenderFont::BITMAP_HELVETICA_18, mnStr);
 }
 
 #pragma endregion
@@ -3111,297 +3041,6 @@ int CheckLineBox(glm::vec3 B1, glm::vec3 B2, glm::vec3 L1, glm::vec3 L2, glm::ve
 
 	return false;
 }
-
-#pragma endregion
-
-#pragma region Pathfinding
-
-struct KeyHash_GLMIVec2
-{
-	size_t operator()(const glm::ivec2& k) const
-	{
-		return std::hash<int>()(k.x) ^ std::hash<int>()(k.y);
-	}
-};
-struct KeyEqual_GLMIVec2
-{
-	bool operator()(const glm::ivec2& a, const glm::ivec2& b) const
-	{
-		return a.x == b.x && a.y == b.y;
-	}
-};
-
-namespace AStar
-{
-	std::vector<glm::ivec2> direction = {
-			{ 0, 1 }, { 1, 0 }, { 0, -1 }, { -1, 0 },
-			{ -1, -1 }, { 1, 1 }, { -1, 1 }, { 1, -1 }
-	};
-
-	using HeuristicFunction = std::function<unsigned int(const glm::ivec2&, const glm::ivec2&)>;
-
-	class Heuristic
-	{
-	private:
-		static glm::ivec2 getDelta(glm::ivec2 source_, glm::ivec2 target_)
-		{
-			return{ abs(source_.x - target_.x),  abs(source_.y - target_.y) };
-		}
-
-	public:
-		static unsigned int manhattan(glm::ivec2 source_, glm::ivec2 target_)
-		{
-			auto delta = std::move(getDelta(source_, target_));
-			return static_cast<unsigned int>(10 * (delta.x + delta.y));
-		}
-
-		static unsigned int euclidean(glm::ivec2 source_, glm::ivec2 target_)
-		{
-			auto delta = std::move(getDelta(source_, target_));
-			return static_cast<unsigned int>(10 * sqrt(pow(delta.x, 2) + pow(delta.y, 2)));
-		}
-
-		static unsigned int octagonal(glm::ivec2 source_, glm::ivec2 target_)
-		{
-			auto delta = std::move(getDelta(source_, target_));
-			return 10 * (delta.x + delta.y) + (-6) * std::min(delta.x, delta.y);
-		}
-	};
-
-	struct Node
-	{
-		glm::ivec2 pos; // The position of the node on the field.
-		Node* cameFrom; // For node n, cameFrom[n] is the node immediately preceding it on the cheapest path from start to n currently known.
-		unsigned int gScore; // For node n, gScore[n] is the cost of the cheapest path from start to n currently known.
-		unsigned int fScore; // For node n, fScore[n] := gScore[n] + h(n). fScore[n] represents our current best guess as to how short a path from start to finish can be if it goes through n.
-
-		Node(const glm::ivec2& _pos) : pos(_pos), gScore(UINT_MAX), fScore(UINT_MAX), cameFrom(0) {}
-		Node(const glm::ivec2& _pos, unsigned int _gScore, unsigned int _fScore) : pos(_pos), gScore(_gScore), fScore(_fScore), cameFrom(0) {}
-	};
-
-	class Pathfinder
-	{
-	private:
-		HeuristicFunction heuristic;
-		unsigned int directions;
-
-		std::unordered_map<glm::ivec2, std::unique_ptr<Node>, KeyHash_GLMIVec2, KeyEqual_GLMIVec2> nodes;
-		// The set of discovered nodes that may need to be (re-)expanded.
-		// Initially, only the start node is known.
-		// This is usually implemented as a min-heap or priority queue rather than a hash-set.
-		std::vector<Node*> openSet;
-
-	public:
-		Pathfinder()
-		{
-			setDiagonalMovement(false);
-			setHeuristic(&Heuristic::manhattan);
-		}
-
-		void setDiagonalMovement(bool enable_)
-		{
-			directions = (enable_ ? 8 : 4);
-		}
-
-		void setHeuristic(HeuristicFunction heuristic_)
-		{
-			heuristic = std::bind(heuristic_, std::placeholders::_1, std::placeholders::_2);
-		}
-
-		// A* finds a path from start to goal.
-		// h is the heuristic function. h(n) estimates the cost to reach goal from node n.
-		std::vector<glm::ivec2> findPath(const glm::ivec2& start, const glm::ivec2& goal, std::function<bool(const glm::ivec2&)> invalid)
-		{
-			openSet.push_back(new Node(start, 0, heuristic(start, goal)));
-			nodes[start].reset(openSet[0]);
-
-			while (!openSet.empty())
-			{
-				// This operation can occur in O(1) time if openSet is a min-heap or a priority queue
-				//current := the node in openSet having the lowest fScore[] value
-				Node* current = openSet[0];
-				for (auto& node : openSet)
-				{
-					if (node->fScore <= current->fScore)
-					{
-						current = node;
-					}
-				}
-
-				if (current->pos == goal)
-				{
-					std::vector<glm::ivec2> ret;
-					while (current->cameFrom != 0)
-					{
-						ret.insert(ret.begin(), current->pos);
-						current = current->cameFrom;
-					}
-					ret.insert(ret.begin(), current->pos);
-					return ret;
-				}
-
-				openSet.erase(std::find(openSet.begin(), openSet.end(), current));
-
-				// iterate through possible neighbors, skipping invalid ones
-				for (unsigned int i = 0; i < directions; i++)
-				{
-					glm::ivec2 newPos(current->pos + direction[i]);
-					if (invalid(newPos)) { continue; }
-					Node* neighbor = nodes[newPos].get();
-					if (neighbor == 0)
-					{
-						neighbor = new Node(newPos);
-						nodes[newPos].reset(neighbor);
-					}
-
-					// d(current, neighbor) is the weight of the edge from current to neighbor
-					// tentative_gScore is the distance from start to the neighbor through current
-					unsigned int tentative_gScore = current->gScore + ((i < 4) ? 10 : 14);
-					if (tentative_gScore < neighbor->gScore)
-					{
-						// This path to neighbor is better than any previous one. Record it!
-						neighbor->cameFrom = current;
-						neighbor->gScore = tentative_gScore;
-						neighbor->fScore = neighbor->gScore + heuristic(neighbor->pos, goal);
-						if (std::find(openSet.begin(), openSet.end(), neighbor) == openSet.end())
-						{
-							openSet.push_back(neighbor);
-						}
-					}
-				}
-			}
-
-			// Open set is empty but goal was never reached
-			return std::vector<glm::ivec2>();
-		}
-	};
-};
-
-#pragma endregion
-
-#pragma region Combat Engine
-
-class ICombatSkill
-{
-private:
-	std::string mName;
-
-public:
-	ICombatSkill(const std::string& name) : mName(name) {}
-
-	const std::string& getName() const { return mName; }
-
-	virtual void attemptCast() = 0;
-	virtual void drawIcon() = 0;
-};
-
-std::unordered_map<int, std::unique_ptr<ICombatSkill>> loadedSkills;
-
-void registerSkill(int id, ICombatSkill* skill) { loadedSkills[id].reset(skill); }
-
-class CombatEntity;
-
-class ICombatEntityListener
-{
-public:
-	virtual void onKilled(CombatEntity* entity) = 0;
-};
-
-class CombatEntity
-{
-private:
-	int mHP;
-	int mMP;
-
-	int mMaxHP;
-	int mMaxMP;
-	int mAttackDamage;
-	float mMoveSpeed;
-
-	int mBonusMaxHP = 0;
-	int mBonusMaxMP = 0;
-	int mBonusAttackDamage = 0;
-	float mBonusMoveSpeed = 0.0f;
-
-	int mTrueMaxHP;
-	int mTrueMaxMP;
-	int mTrueAttackDamage;
-	float mTrueMoveSpeed;
-
-	void recalcMaxHP() { mTrueMaxHP = mMaxHP + mBonusMaxHP; }
-	void recalcMaxMP() { mTrueMaxMP = mMaxMP + mBonusMaxMP; }
-	void recalcAttackDamage() { mTrueAttackDamage = mAttackDamage + mBonusAttackDamage; }
-	void recalcMoveSpeed() { mTrueMoveSpeed = mMoveSpeed + mBonusMoveSpeed; }
-
-protected:
-	glm::vec3 mPosition;
-
-	std::vector<ICombatEntityListener*> mListeners;
-
-public:
-	CombatEntity()
-	{
-		setBaseMaxHP(5);
-		setBaseMaxMP(5);
-		setBaseAttackDamage(1);
-		setBaseMoveSpeed(7.5f);
-
-		setHP(getMaxHP());
-		setMP(getMaxMP());
-	}
-
-	const glm::vec3& getPosition() const { return mPosition; }
-	void setPosition(const glm::vec3& pos) { mPosition = pos; }
-
-	AxisAlignedBoundingBox getAxisAlignedBoundingBox()
-	{
-		glm::vec3 lowerLeft(getPosition());
-		glm::vec3 upperRight(lowerLeft);
-		lowerLeft.x--;
-		lowerLeft.z--;
-		upperRight.x++;
-		upperRight.z++;
-		upperRight.y += 2;
-
-		return AxisAlignedBoundingBox(lowerLeft, upperRight);
-	}
-
-	void addListener(ICombatEntityListener* listener) { mListeners.push_back(listener); }
-
-	void onKilled() { for (auto& listener : mListeners) { listener->onKilled(this); } }
-
-	// dependent stats
-
-	int getHP() { return mHP; }
-	void setHP(int hp) { mHP = std::min(hp, getMaxHP()); }
-	int getMP() { return mMP; }
-	void setMP(int mp) { mMP = std::min(mp, getMaxMP()); }
-
-	// base stats
-
-	int getBaseMaxHP() { return mMaxHP; }
-	void setBaseMaxHP(int maxhp) { mMaxHP = maxhp; recalcMaxHP(); }
-	int getBaseMaxMP() { return mMaxMP; }
-	void setBaseMaxMP(int maxmp) { mMaxMP = maxmp; recalcMaxMP(); }
-	int getBaseAttackDamage() { return mAttackDamage; }
-	void setBaseAttackDamage(int attackDamage) { mAttackDamage = attackDamage; recalcAttackDamage(); }
-	float getBaseMoveSpeed() { return mMoveSpeed; }
-	void setBaseMoveSpeed(float movespeed) { mMoveSpeed = movespeed; recalcMoveSpeed(); }
-
-	// bonus stats
-
-	void setBonusMaxHP(int maxhp) { mBonusMaxHP = maxhp; recalcMaxHP(); }
-	void setBonusMaxMP(int maxmp) { mBonusMaxMP = maxmp; recalcMaxMP(); }
-	void setBonusAttackDamage(int attack) { mBonusAttackDamage = attack; recalcAttackDamage(); }
-	void setBonusMoveSpeed(float movespeed) { mBonusMoveSpeed = movespeed; recalcMoveSpeed(); }
-
-	// true stats
-
-	int getMaxHP() { return mTrueMaxHP; }
-	int getMaxMP() { return mTrueMaxMP; }
-	int getAttackDamage() { return mTrueAttackDamage; }
-	float getMoveSpeed() { return mTrueMoveSpeed; }
-};
 
 #pragma endregion
 
@@ -3589,72 +3228,6 @@ void updatePlayer(float elapsed)
 }
 
 #pragma region Items & Inventory
-
-enum class InventoryType
-{
-	UNDEFINED,
-	EQUIP,
-	USE,
-	SETUP,
-	ETC,
-	CASH,
-	BANK,
-	EQUIPPED = -1
-};
-
-InventoryType getItemInventoryType(int itemId)
-{
-	InventoryType ret = InventoryType::UNDEFINED;
-
-	int type = itemId / 1000000;
-	if (type >= 1 && type <= 5) { ret = (InventoryType)type; }
-
-	return ret;
-}
-
-class Item
-{
-private:
-	int mId;
-	short mPosition;
-	short mQuantity;
-
-public:
-	Item(int id) : mId(id), mPosition(0), mQuantity(1) {}
-	Item(int id, short quantity) : mId(id), mPosition(0), mQuantity(quantity) {}
-	Item(int id, short position, short quantity) : mId(id), mPosition(position), mQuantity(quantity) {}
-
-	const int& getItemId() { return mId; }
-	const short& getPosition() { return mPosition; }
-	const short& getQuantity() { return mQuantity; }
-
-	void setPosition(short position) { mPosition = position; }
-	void setQuantity(short quantity) { mQuantity = quantity; }
-
-	InventoryType getInventoryType() { return getItemInventoryType(mId); }
-};
-
-class Equip : public Item
-{
-private:
-	int mHP = 0;
-	int mMP = 0;
-	int mAttackDamage = 0;
-	float mMoveSpeed = 0.0f;
-
-public:
-	Equip(int id) : Item(id) {}
-
-	int getHP() { return mHP; }
-	int getMP() { return mMP; }
-	int getAttackDamage() { return mAttackDamage; }
-	float getMoveSpeed() { return mMoveSpeed; }
-
-	void setHP(int hp) { mHP = hp; }
-	void setMP(int mp) { mMP = mp; }
-	void setAttackDamage(int attack) { mAttackDamage = attack; }
-	void setMoveSpeed(float movespeed) { mMoveSpeed = movespeed; }
-};
 
 class Inventory
 {
@@ -4339,287 +3912,6 @@ std::unique_ptr<ICombatEntityListener> enemyGiveExpListener;
 
 #pragma endregion
 
-#pragma region Item Information
-
-class ItemInfo
-{
-public:
-	virtual std::string getName() = 0;
-	virtual std::string getDescription() { return "No description."; }
-	virtual void drawIcon() = 0;
-	virtual void onUse(CombatEntity* user) {}
-};
-
-class Item_BasicRaycaster : public ItemInfo
-{
-public:
-	virtual std::string getName() { return "Basic Raycaster"; }
-	virtual void drawIcon()
-	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(225));
-		drawQuad2D(11, 15, 8, 19);
-		drawQuad2D(19, 15, 19, 8);
-		drawQuad2D(19, 25, 3, 3);
-	}
-};
-
-class Item_PowerRaycaster : public ItemInfo
-{
-public:
-	virtual std::string getName() { return "Power Raycaster"; }
-	virtual void drawIcon()
-	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(25), BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(201));
-		drawQuad2D(11, 15, 8, 19);
-		drawQuad2D(19, 15, 19, 8);
-		drawQuad2D(19, 25, 3, 3);
-	}
-};
-
-class Item_BlastRaycaster : public ItemInfo
-{
-public:
-	virtual std::string getName() { return "Blast Raycaster"; }
-	virtual void drawIcon()
-	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(79), BYTE_TO_FLOAT_COLOR(56));
-		drawQuad2D(11, 15, 8, 19);
-		drawQuad2D(19, 15, 19, 8);
-		drawQuad2D(19, 25, 3, 3);
-	}
-};
-
-class Item_BasicCharger : public ItemInfo
-{
-public:
-	virtual std::string getName() { return "Basic Charger"; }
-	virtual void drawIcon()
-	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(225));
-		drawQuad2D(11, 15, 8, 19);
-		drawQuad2D(19, 15, 19, 8);
-		drawQuad2D(19, 25, 3, 3);
-		drawQuad2D(29, 23, 9, 11);
-		drawQuad2D(19, 31, 10, 3);
-	}
-};
-
-class Item_PowerCharger : public ItemInfo
-{
-public:
-	virtual std::string getName() { return "Power Charger"; }
-	virtual void drawIcon()
-	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(25), BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(201));
-		drawQuad2D(11, 15, 8, 19);
-		drawQuad2D(19, 15, 19, 8);
-		drawQuad2D(19, 25, 3, 3);
-		drawQuad2D(29, 23, 9, 11);
-		drawQuad2D(19, 31, 10, 3);
-	}
-};
-
-class Item_BlastCharger : public ItemInfo
-{
-public:
-	virtual std::string getName() { return "Blast Charger"; }
-	virtual void drawIcon()
-	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(79), BYTE_TO_FLOAT_COLOR(56));
-		drawQuad2D(11, 15, 8, 19);
-		drawQuad2D(19, 15, 19, 8);
-		drawQuad2D(19, 25, 3, 3);
-		drawQuad2D(29, 23, 9, 11);
-		drawQuad2D(19, 31, 10, 3);
-	}
-};
-
-class Item_RedPotion : public ItemInfo
-{
-public:
-	virtual std::string getName() { return "Red Potion"; }
-	virtual std::string getDescription() { return "Restores 10 HP."; }
-	virtual void drawIcon()
-	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
-		drawQuad2D(12, 12, 24, 24);
-		drawQuad2D(18, 10, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
-		drawQuad2D(18, 8, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
-		drawQuad2D(20, 12, 8, 2);
-		drawQuad2D(14, 14, 20, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(142), BYTE_TO_FLOAT_COLOR(42), BYTE_TO_FLOAT_COLOR(54));
-		drawQuad2D(14, 16, 20, 18);
-	}
-	virtual void onUse(CombatEntity* user)
-	{
-		user->setHP(playerEntity->getHP() + 10);
-	}
-};
-
-class Item_OrangePotion : public ItemInfo
-{
-public:
-	virtual std::string getName() { return "Orange Potion"; }
-	virtual std::string getDescription() { return "Restores 50 HP."; }
-	virtual void drawIcon()
-	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
-		drawQuad2D(12, 12, 24, 24);
-		drawQuad2D(18, 10, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
-		drawQuad2D(18, 8, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
-		drawQuad2D(20, 12, 8, 2);
-		drawQuad2D(14, 14, 20, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(242), BYTE_TO_FLOAT_COLOR(137), BYTE_TO_FLOAT_COLOR(58));
-		drawQuad2D(14, 16, 20, 18);
-	}
-	virtual void onUse(CombatEntity* user)
-	{
-		user->setHP(playerEntity->getHP() + 50);
-	}
-};
-
-class Item_WhitePotion : public ItemInfo
-{
-public:
-	virtual std::string getName() { return "White Potion"; }
-	virtual std::string getDescription() { return "Restores 100 HP."; }
-	virtual void drawIcon()
-	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
-		drawQuad2D(12, 12, 24, 24);
-		drawQuad2D(18, 10, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
-		drawQuad2D(18, 8, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
-		drawQuad2D(20, 12, 8, 2);
-		drawQuad2D(14, 14, 20, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(239), BYTE_TO_FLOAT_COLOR(237), BYTE_TO_FLOAT_COLOR(227));
-		drawQuad2D(14, 16, 20, 18);
-	}
-	virtual void onUse(CombatEntity* user)
-	{
-		user->setHP(playerEntity->getHP() + 100);
-	}
-};
-
-class Item_BluePotion : public ItemInfo
-{
-public:
-	virtual std::string getName() { return "Blue Potion"; }
-	virtual std::string getDescription() { return "Restores 10 MP."; }
-	virtual void drawIcon()
-	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
-		drawQuad2D(12, 12, 24, 24);
-		drawQuad2D(18, 10, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
-		drawQuad2D(18, 8, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
-		drawQuad2D(20, 12, 8, 2);
-		drawQuad2D(14, 14, 20, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(50), BYTE_TO_FLOAT_COLOR(80), BYTE_TO_FLOAT_COLOR(140));
-		drawQuad2D(14, 16, 20, 18);
-	}
-	virtual void onUse(CombatEntity* user)
-	{
-		user->setMP(playerEntity->getMP() + 10);
-	}
-};
-
-class Item_ManaElixir : public ItemInfo
-{
-public:
-	virtual std::string getName() { return "Mana Elixir"; }
-	virtual std::string getDescription() { return "Restores 100 MP."; }
-	virtual void drawIcon()
-	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
-		drawQuad2D(12, 12, 24, 24);
-		drawQuad2D(18, 10, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
-		drawQuad2D(18, 8, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
-		drawQuad2D(20, 12, 8, 2);
-		drawQuad2D(14, 14, 20, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(11), BYTE_TO_FLOAT_COLOR(19), BYTE_TO_FLOAT_COLOR(237));
-		drawQuad2D(14, 16, 20, 18);
-	}
-	virtual void onUse(CombatEntity* user)
-	{
-		user->setMP(playerEntity->getMP() + 100);
-	}
-};
-
-std::unordered_map<int, std::unique_ptr<ItemInfo>> registeredItems;
-
-void registerItem(int id, ItemInfo* info) { registeredItems[id].reset(info); }
-ItemInfo* getItemInfo(int id) { return registeredItems.count(id) > 0 ? registeredItems[id].get() : 0; }
-
-Equip* createEquipById(int id)
-{
-	Equip* equip = new Equip(id);
-
-	if (id == 1492001)
-	{
-		equip->setAttackDamage(1);
-	}
-	else if (id == 1492002)
-	{
-		equip->setAttackDamage(2);
-	}
-	else if (id == 1492003)
-	{
-		equip->setAttackDamage(3);
-	}
-	else if (id == 1492004)
-	{
-		equip->setAttackDamage(2);
-		equip->setMoveSpeed(1.0f);
-	}
-	else if (id == 1492005)
-	{
-		equip->setAttackDamage(3);
-		equip->setMoveSpeed(2.0f);
-	}
-	else if (id == 1492006)
-	{
-		equip->setAttackDamage(4);
-		equip->setMoveSpeed(3.0f);
-	}
-
-	return equip;
-}
-
-int getRandStat(int defaultValue, int maxRange)
-{
-	if (defaultValue == 0) { return 0; }
-	int lMaxRange = (int)std::min(std::ceil(defaultValue * 0.1), (double)maxRange);
-	return (int)((defaultValue - lMaxRange) + std::floor(getRandomDouble() * (lMaxRange * 2 + 1)));
-}
-
-float getRandStatf(float defaultValue, float maxRange)
-{
-	if (defaultValue == 0) { return 0; }
-	float lMaxRange = std::min(std::ceilf(defaultValue * 0.1f), maxRange);
-	return ((defaultValue - lMaxRange) + std::floorf((float)getRandomDouble() * (lMaxRange * 2 + 1)));
-}
-
-Equip* randomizeStats(Equip* equip)
-{
-	equip->setHP(getRandStat(equip->getHP(), 10));
-	equip->setMP(getRandStat(equip->getMP(), 10));
-	equip->setAttackDamage(getRandStat(equip->getAttackDamage(), 5));
-	equip->setMoveSpeed(getRandStatf(equip->getMoveSpeed(), 5));
-
-	return equip;
-}
-
-#pragma endregion
-
 #pragma region Portal Interface
 
 bool isPlayerNearAnyPortal(); // TODO: TEMP, UGLY TO PUT HERE
@@ -4672,8 +3964,6 @@ bool isPlayerNearAnyPortal()
 
 #pragma region User Interface
 
-glm::ivec2 currentMousePos;
-
 std::string to_string(const glm::vec3& v) { return std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z); }
 std::string to_string(const glm::ivec3& v) { return std::to_string(v.x) + ", " + std::to_string(v.y) + ", " + std::to_string(v.z); }
 std::string to_string(const glm::ivec2& v) { return std::to_string(v.x) + ", " + std::to_string(v.y); }
@@ -4712,165 +4002,13 @@ void updateInformationHistory()
 		InformationHistoryEntry* entry = informationHistory.at(i).get();
 		int remainTime = entry->getRemainingTime();
 		glColor4f(0.0f, 0.0f, 0.0f, remainTime > 1000 ? 1.0f : glm::mix(0.1f, 1.0f, remainTime / 1000.0f));
-		renderString(windowWidth - 300, 700 - (i * 20), GLUT_BITMAP_HELVETICA_18, entry->getMessage());
+		Renderer::renderString(windowWidth - 300, 700 - (i * 20), RenderFont::BITMAP_HELVETICA_18, entry->getMessage());
 	}
 }
 
 #pragma endregion
 
-#pragma region UI Window Core
 
-class UIWindow
-{
-private:
-	glm::ivec2 mPosition;
-	glm::ivec2 mSize;
-	std::string mTitle;
-	bool mVisible = false;
-	glm::ivec2 mClientAreaOffset = glm::ivec2(5, 25);
-
-protected:
-	void quad(int x, int y, int width, int height) { drawQuad2D(x, y, width, height); }
-	void text(int x, int y, void* font, const std::string& str) { renderString(mPosition.x + mClientAreaOffset.x + x, mPosition.y + mClientAreaOffset.y + y, font, str); }
-
-	void pushTransformMatrix()
-	{
-		glPushMatrix();
-		glTranslatef((float)(mPosition.x + mClientAreaOffset.x), (float)(mPosition.y + mClientAreaOffset.y), 0.0f);
-	}
-
-	void popTransformMatrix()
-	{
-		glPopMatrix();
-	}
-
-	virtual void draw() = 0;
-	virtual void click(int x, int y) {}
-	virtual void mouseMove(int x, int y) {}
-	virtual void mouseDrag(int x, int y) {}
-
-	glm::ivec2 getClientAreaMousePos() { return glm::ivec2(currentMousePos.x - mPosition.x - mClientAreaOffset.x, currentMousePos.y - mPosition.y - mClientAreaOffset.y); }
-
-public:
-	UIWindow(const glm::ivec2& pos, const glm::ivec2& size, const std::string& title) : mPosition(pos), mSize(size), mTitle(title) {}
-
-	const glm::ivec2& getPosition() const { return mPosition; }
-	void setPosition(const glm::ivec2& pos) { mPosition = pos; }
-	const glm::ivec2& getSize() const { return mSize; }
-	const std::string& getTitle() const { return mTitle; }
-	const bool& getVisible() const { return mVisible; }
-	void setVisible(bool visible) { mVisible = visible; }
-
-	void onDraw()
-	{
-		if (!mVisible) { return; }
-
-		glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-		drawQuad2D(mPosition.x, mPosition.y, mSize.x, mSize.y);
-		glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-		drawQuad2D(mPosition.x + 5, mPosition.y + 5, mSize.x - 10, mSize.y - 10);
-		drawQuad2D(mPosition.x + 10, mPosition.y + 7, mSize.x - 40, 20); // title bar bg
-		glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
-		renderString(mPosition.x + 5 + (mSize.x / 2) - (getStringWidth(GLUT_BITMAP_HELVETICA_18, mTitle) / 2), mPosition.y + 5 + 20, GLUT_BITMAP_HELVETICA_18, mTitle);
-
-		// x button
-		glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-		drawQuad2D(mPosition.x + mSize.x - 26, mPosition.y + 7, 19, 20);
-		glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-		renderString(mPosition.x + mSize.x - 21, mPosition.y + 7 + 15, GLUT_BITMAP_HELVETICA_18, "x");
-
-		pushTransformMatrix();
-		draw();
-		popTransformMatrix();
-	}
-
-	bool onClick(int x, int y)
-	{
-		if (!mVisible) { return false; }
-
-		if (x >= mPosition.x && x <= mPosition.x + mSize.x && y >= mPosition.y && y <= mPosition.y + mSize.y)
-		{
-			// toggle visiblity on x button press
-			glm::ivec2 xbPos(mPosition.x + mSize.x - 26, mPosition.y + 7);
-			if (x >= xbPos.x && y >= xbPos.y && x <= xbPos.x + 19 && y <= xbPos.y + 20) { mVisible = false; }
-			else { click(x - mPosition.x - mClientAreaOffset.x, y - mPosition.y - mClientAreaOffset.y); }
-
-			return true;
-		}
-
-		return false;
-	}
-
-	void onMouseMove()
-	{
-		if (!mVisible) { return; }
-
-		mouseMove(currentMousePos.x - mPosition.x - mClientAreaOffset.x, currentMousePos.y - mPosition.y - mClientAreaOffset.y);
-	}
-
-	void onMouseDrag(int x, int y)
-	{
-		if (!mVisible) { return; }
-
-		mouseDrag(x - mPosition.x - mClientAreaOffset.x, y - mPosition.y - mClientAreaOffset.y);
-	}
-};
-
-std::vector<std::unique_ptr<UIWindow>> uiWindows;
-
-void addUIWindow(UIWindow* window) { uiWindows.push_back(std::unique_ptr<UIWindow>(window)); }
-
-UIWindow* getUIWindowByTitle(const std::string& title)
-{
-	UIWindow* ret = 0;
-	for (auto& window : uiWindows)
-	{
-		if (window->getTitle() == title)
-		{
-			ret = window.get();
-			break;
-		}
-	}
-	return ret;
-}
-
-#pragma endregion
-
-class ItemDisplayUIWindow : public UIWindow
-{
-protected:
-	void drawItemTooltip(const glm::ivec2& curPos, Item* item)
-	{
-		pushTransformMatrix();
-		glColor4f(0.25f, 0.25f, 0.25f, 0.9f);
-		quad(curPos.x + 20, curPos.y + 20, 175, 100);
-		glColor3f(1.0f, 1.0f, 1.0f);
-		ItemInfo* info = getItemInfo(item->getItemId());
-		if (info)
-		{
-			text(curPos.x + 23, curPos.y + 23 + 18, GLUT_BITMAP_HELVETICA_18, info->getName());
-			text(curPos.x + 23, curPos.y + 23 + 18 + 3 + 12, GLUT_BITMAP_HELVETICA_12, info->getDescription());
-
-			if (item->getInventoryType() == InventoryType::EQUIP)
-			{
-				Equip* equip = (Equip*)item;
-				int yOff = curPos.y + 23 + 18 + 3 + 12 + 3 + 10;
-				if (equip->getHP() > 0) { text(curPos.x + 23, yOff, GLUT_BITMAP_HELVETICA_10, "HP +" + std::to_string(equip->getHP())); yOff += 13; }
-				if (equip->getMP() > 0) { text(curPos.x + 23, yOff, GLUT_BITMAP_HELVETICA_10, "MP +" + std::to_string(equip->getMP())); yOff += 13; }
-				if (equip->getAttackDamage() > 0) { text(curPos.x + 23, yOff, GLUT_BITMAP_HELVETICA_10, "Attack +" + std::to_string(equip->getAttackDamage())); yOff += 13; }
-				if (equip->getMoveSpeed() > 0) { text(curPos.x + 23, yOff, GLUT_BITMAP_HELVETICA_10, "Move Speed +" + std::to_string(equip->getMoveSpeed())); yOff += 13; }
-			}
-		}
-		else
-		{
-			text(curPos.x + 23, curPos.y + 23 + 12, GLUT_BITMAP_HELVETICA_12, "Item information not loaded.");
-		}
-		popTransformMatrix();
-	}
-
-public:
-	ItemDisplayUIWindow(const glm::ivec2& pos, const glm::ivec2& size, const std::string& title) : UIWindow(pos, size, title) {}
-};
 
 Item* clickSelectedItem = 0;
 Inventory* clickSelectedItemInventory = 0;
@@ -4879,11 +4017,11 @@ void updateClickSelectedItem()
 {
 	if (clickSelectedItem)
 	{
-		ItemInfo* info = getItemInfo(clickSelectedItem->getItemId());
+		ItemInfo* info = ItemInformationProvider::getItemInfo(clickSelectedItem->getItemId());
 		if (info)
 		{
 			glPushMatrix();
-			glTranslatef((float)currentMousePos.x + 5, (float)currentMousePos.y + 5, 0);
+			glTranslatef((float)UIWindowManager::getMousePos().x + 5, (float)UIWindowManager::getMousePos().y + 5, 0);
 			info->drawIcon();
 			glPopMatrix();
 		}
@@ -4904,22 +4042,22 @@ protected:
 			Item* item = playerInventoryItems.getItem(slot);
 
 			glColor4f(0.0f, 0.0f, 0.0f, item ? 0.75f : 0.25f);
-			drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
+			Renderer::drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
 			if (item)
 			{
 				glColor4f(1.0f, 1.0f, 1.0f, 0.25f);
-				text(5 + (col * 52), 5 + (row * 52) + 13, GLUT_BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
+				text(5 + (col * 52), 5 + (row * 52) + 13, RenderFont::BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
 
 				// show quantity for non-equips
 				if (item->getInventoryType() != InventoryType::EQUIP)
 				{
 					glColor3f(1.0f, 1.0f, 1.0f);
 					std::string quantityStr = std::to_string(item->getQuantity());
-					text(5 + (col * 52) + 45 - getStringWidth(GLUT_BITMAP_HELVETICA_12, quantityStr), 5 + (row * 52) + 45, GLUT_BITMAP_HELVETICA_12, quantityStr);
+					text(5 + (col * 52) + 45 - Renderer::getStringWidth(RenderFont::BITMAP_HELVETICA_12, quantityStr), 5 + (row * 52) + 45, RenderFont::BITMAP_HELVETICA_12, quantityStr);
 				}
 
 				// draw icon if loaded
-				ItemInfo* info = getItemInfo(item->getItemId());
+				ItemInfo* info = ItemInformationProvider::getItemInfo(item->getItemId());
 				if (info)
 				{
 					glPushMatrix();
@@ -4992,7 +4130,7 @@ protected:
 						// TODO: dont add skill if already known!
 						// TODO: should be skill id taught by item with given item id (currently assumes itemid == skillid...)
 						playerSkills.push_back(std::unique_ptr<LearnedSkill>(new LearnedSkill(item->getItemId(), 1, 0)));
-						addInformationHistory("Learned skill (" + loadedSkills[item->getItemId()]->getName() + ")");
+						addInformationHistory("Learned skill (" + SkillInformationProvider::getSkillInfo(item->getItemId())->getName() + ")");
 
 						// add old item back into inventory if it exists. doing this after ensures no overflow if inv is full when equipping
 						if (existingEq) { playerInventoryItems.addItem(existingEq); }
@@ -5001,7 +4139,7 @@ protected:
 					}
 					else if (type == InventoryType::USE)
 					{
-						getItemInfo(item->getItemId())->onUse(playerEntity);
+						ItemInformationProvider::getItemInfo(item->getItemId())->onUse(playerEntity);
 						playerInventoryItems.removeItem(slot);
 					}
 				}
@@ -5049,14 +4187,14 @@ protected:
 			Item* item = playerEquipmentItems.getItem(slot);
 
 			glColor4f(0.0f, 0.0f, 0.0f, item ? 0.75f : 0.25f);
-			drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
+			Renderer::drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
 			if (item)
 			{
 				glColor4f(1.0f, 1.0f, 1.0f, 0.25f);
-				text(5 + (col * 52), 5 + (row * 52) + 13, GLUT_BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
+				text(5 + (col * 52), 5 + (row * 52) + 13, RenderFont::BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
 
 				// draw icon if loaded
-				ItemInfo* info = getItemInfo(item->getItemId());
+				ItemInfo* info = ItemInformationProvider::getItemInfo(item->getItemId());
 				if (info)
 				{
 					glPushMatrix();
@@ -5142,9 +4280,9 @@ void updateClickSelectedSkill()
 {
 	if (clickSelectedSkill)
 	{
-		ICombatSkill* skillInfo = loadedSkills[clickSelectedSkill->getId()].get();
+		SkillInfo* skillInfo = SkillInformationProvider::getSkillInfo(clickSelectedSkill->getId());
 		glPushMatrix();
-		glTranslatef((float)currentMousePos.x + 5, (float)currentMousePos.y + 5, 0);
+		glTranslatef((float)UIWindowManager::getMousePos().x + 5, (float)UIWindowManager::getMousePos().y + 5, 0);
 		skillInfo->drawIcon();
 		glPopMatrix();
 	}
@@ -5158,7 +4296,7 @@ protected:
 		for (unsigned int i = 0; i < playerSkills.size(); i++)
 		{
 			LearnedSkill* charSkill = playerSkills[i].get();
-			ICombatSkill* skillInfo = loadedSkills[charSkill->getId()].get();
+			SkillInfo* skillInfo = SkillInformationProvider::getSkillInfo(charSkill->getId());
 
 			int y = 5 + (i * 52);
 
@@ -5176,8 +4314,8 @@ protected:
 			glColor4f(0.0f, 1.0f, 0.0f, 0.8f);
 			quad(55, y, calcProgressWidth(charSkill->getExp(), charSkill->getLevelUpExp(), 325), 48);
 			glColor3f(0.0f, 0.0f, 0.0f);
-			text(55, y + 20, GLUT_BITMAP_HELVETICA_18, skillInfo->getName());
-			text(100, y + 40, GLUT_BITMAP_HELVETICA_12, "Lv. " + std::to_string(charSkill->getLevel()) + " (" + std::to_string(charSkill->getExp()) + " / " + std::to_string(charSkill->getLevelUpExp()) + ")");
+			text(55, y + 20, RenderFont::BITMAP_HELVETICA_18, skillInfo->getName());
+			text(100, y + 40, RenderFont::BITMAP_HELVETICA_12, "Lv. " + std::to_string(charSkill->getLevel()) + " (" + std::to_string(charSkill->getExp()) + " / " + std::to_string(charSkill->getLevelUpExp()) + ")");
 		}
 	}
 
@@ -5222,7 +4360,7 @@ protected:
 			glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
 			quad(5, 5 + (i * 29), 175, 25);
 			glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-			text(5, 25 + (i * 29), GLUT_BITMAP_HELVETICA_18, "item id " + std::to_string(shopItems[i]));
+			text(5, 25 + (i * 29), RenderFont::BITMAP_HELVETICA_18, "item id " + std::to_string(shopItems[i]));
 		}
 	}
 
@@ -5279,24 +4417,24 @@ void drawDialogueWindow()
 	if (!dialogueVisible) { return; }
 
 	glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-	drawQuad2D(395, 95, 410, 340);
+	Renderer::drawQuad2D(395, 95, 410, 340);
 	glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-	drawQuad2D(400, 100, 400, 330);
+	Renderer::drawQuad2D(400, 100, 400, 330);
 	glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
-	renderString(475, 120, GLUT_BITMAP_HELVETICA_18, "Dialogue");
+	Renderer::renderString(475, 120, RenderFont::BITMAP_HELVETICA_18, "Dialogue");
 
-	renderString(405, 150, GLUT_BITMAP_HELVETICA_18, activeDialogueWindow->getMessage());
+	Renderer::renderString(405, 150, RenderFont::BITMAP_HELVETICA_18, activeDialogueWindow->getMessage());
 
 	// buttons
 	glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-	drawQuad2D(500, 405, 100, 20);
+	Renderer::drawQuad2D(500, 405, 100, 20);
 	glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-	renderString(540, 425, GLUT_BITMAP_HELVETICA_18, "OK");
+	Renderer::renderString(540, 425, RenderFont::BITMAP_HELVETICA_18, "OK");
 
 	glColor4f(0.0f, 0.0f, 0.0f, 0.75f);
-	drawQuad2D(610, 405, 100, 20);
+	Renderer::drawQuad2D(610, 405, 100, 20);
 	glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-	renderString(625, 425, GLUT_BITMAP_HELVETICA_18, "Cancel");
+	Renderer::renderString(625, 425, RenderFont::BITMAP_HELVETICA_18, "Cancel");
 }
 
 void onDialogueWindowClick(int x, int y)
@@ -5418,12 +4556,12 @@ void updateClickSelectedKeybind()
 	if (clickSelectedKeybind)
 	{
 		glColor4f(0.5f, 0.5f, 0.5f, 0.5f);
-		drawQuad2D(currentMousePos.x + 5, currentMousePos.y + 5, 48, 48);
+		Renderer::drawQuad2D(UIWindowManager::getMousePos().x + 5, UIWindowManager::getMousePos().y + 5, 48, 48);
 		glColor4f(1.0f, 1.0f, 1.0f, 0.5f);
 		std::vector<std::string> parts = Tools::StringUtil::explode(clickSelectedKeybind->name, ' ');
 		for (unsigned int i = 0; i < parts.size(); i++)
 		{
-			renderString(currentMousePos.x + 5, currentMousePos.y + 5 + 15 + (i * 14), GLUT_BITMAP_8_BY_13, parts[i]);
+			Renderer::renderString(UIWindowManager::getMousePos().x + 5, UIWindowManager::getMousePos().y + 5 + 15 + (i * 14), RenderFont::BITMAP_8_BY_13, parts[i]);
 		}
 	}
 }
@@ -5450,12 +4588,12 @@ protected:
 				std::vector<std::string> parts = Tools::StringUtil::explode(action->name, ' ');
 				for (unsigned int i = 0; i < parts.size(); i++)
 				{
-					text(keybind.second.position.x, 15 + keybind.second.position.y + (i * 14), GLUT_BITMAP_8_BY_13, parts[i]);
+					text(keybind.second.position.x, 15 + keybind.second.position.y + (i * 14), RenderFont::BITMAP_8_BY_13, parts[i]);
 				}
 			}
 			else if (keybind.second.type == Keybinding::Type::SKILL) // bound skills
 			{
-				ICombatSkill* skillInfo = loadedSkills[keybind.second.actionId].get();
+				SkillInfo* skillInfo = SkillInformationProvider::getSkillInfo(keybind.second.actionId);
 				// deeper background
 				glColor4f(0.5f, 0.5f, 0.5f, 0.75f);
 				quad(keybind.second.position.x, keybind.second.position.y, keybind.second.size.x, keybind.second.size.y);
@@ -5467,7 +4605,7 @@ protected:
 			}
 			else if (keybind.second.type == Keybinding::Type::ITEM) // bound items
 			{
-				ItemInfo* itemInfo = getItemInfo(keybind.second.actionId);
+				ItemInfo* itemInfo = ItemInformationProvider::getItemInfo(keybind.second.actionId);
 				// deeper background
 				glColor4f(0.5f, 0.5f, 0.5f, 0.75f);
 				quad(keybind.second.position.x, keybind.second.position.y, keybind.second.size.x, keybind.second.size.y);
@@ -5479,7 +4617,7 @@ protected:
 			}
 
 			glColor4f(1.0f, 1.0f, 1.0f, 0.75f);
-			text(5 + keybind.second.position.x, 45 + keybind.second.position.y, GLUT_BITMAP_9_BY_15, keybind.second.text);
+			text(5 + keybind.second.position.x, 45 + keybind.second.position.y, RenderFont::BITMAP_9_BY_15, keybind.second.text);
 		}
 
 		// all internal action display area
@@ -5498,7 +4636,7 @@ protected:
 			std::vector<std::string> parts = Tools::StringUtil::explode(action->name, ' ');
 			for (unsigned int ii = 0; ii < parts.size(); ii++)
 			{
-				text(10 + (col * 52), 330 + 15 + (row * 52) + (ii * 14), GLUT_BITMAP_8_BY_13, parts[ii]);
+				text(10 + (col * 52), 330 + 15 + (row * 52) + (ii * 14), RenderFont::BITMAP_8_BY_13, parts[ii]);
 			}
 		}
 	}
@@ -5738,7 +4876,7 @@ protected:
 				if (type.a != 0)
 				{
 					glm::vec3 clr = type.toVertexColor();
-					glColor4f(clr.r, clr.g, clr.b, BYTE_TO_FLOAT_COLOR(type.a));
+					glColor4f(clr.r, clr.g, clr.b, Renderer::BYTE_TO_FLOAT_COLOR(type.a));
 					quad(10 + x, 10 + z, 1, 1);
 				}
 			}
@@ -5769,11 +4907,11 @@ protected:
 				quad(rectLower.x, rectLower.y, 450, 18);
 			}
 			glColor3f(0.0f, 0.0f, 0.0f);
-			text(690, 30 + (i * 20), GLUT_BITMAP_HELVETICA_18, portals[i]->getName() + " (" + to_string(portals[i]->getPosition()) + ")");
+			text(690, 30 + (i * 20), RenderFont::BITMAP_HELVETICA_18, portals[i]->getName() + " (" + to_string(portals[i]->getPosition()) + ")");
 		}
 
 		// show current display offset
-		text(10, 540, GLUT_BITMAP_HELVETICA_18, "Showing (" + to_string(mDisplayOffset) + ") to (" + to_string(glm::ivec2(mDisplayOffset.x + 670, mDisplayOffset.y + 500)) + ")");
+		text(10, 540, RenderFont::BITMAP_HELVETICA_18, "Showing (" + to_string(mDisplayOffset) + ") to (" + to_string(glm::ivec2(mDisplayOffset.x + 670, mDisplayOffset.y + 500)) + ")");
 	}
 
 	virtual void click(int x, int y)
@@ -5826,7 +4964,7 @@ class FuckYouWindow : public UIWindow
 protected:
 	virtual void draw()
 	{
-		text(30, 30, GLUT_BITMAP_HELVETICA_18, "fuck you");
+		text(30, 30, RenderFont::BITMAP_HELVETICA_18, "fuck you");
 	}
 
 public:
@@ -5847,22 +4985,22 @@ protected:
 			Item* item = playerBankItems.getItem(slot);
 
 			glColor4f(0.0f, 0.0f, 0.0f, item ? 0.75f : 0.25f);
-			drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
+			Renderer::drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
 			if (item)
 			{
 				glColor4f(1.0f, 1.0f, 1.0f, 0.25f);
-				text(5 + (col * 52), 5 + (row * 52) + 13, GLUT_BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
+				text(5 + (col * 52), 5 + (row * 52) + 13, RenderFont::BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
 
 				// show quantity for non-equips
 				if (item->getInventoryType() != InventoryType::EQUIP)
 				{
 					glColor3f(1.0f, 1.0f, 1.0f);
 					std::string quantityStr = std::to_string(item->getQuantity());
-					text(5 + (col * 52) + 45 - getStringWidth(GLUT_BITMAP_HELVETICA_12, quantityStr), 5 + (row * 52) + 45, GLUT_BITMAP_HELVETICA_12, quantityStr);
+					text(5 + (col * 52) + 45 - Renderer::getStringWidth(RenderFont::BITMAP_HELVETICA_12, quantityStr), 5 + (row * 52) + 45, RenderFont::BITMAP_HELVETICA_12, quantityStr);
 				}
 
 				// draw icon if loaded
-				ItemInfo* info = getItemInfo(item->getItemId());
+				ItemInfo* info = ItemInformationProvider::getItemInfo(item->getItemId());
 				if (info)
 				{
 					glPushMatrix();
@@ -5945,15 +5083,15 @@ protected:
 					glColor4f(0.25f, 0.25f, 0.25f, 0.9f);
 					quad(curPos.x + 20, curPos.y + 20, 150, 80);
 					glColor3f(1.0f, 1.0f, 1.0f);
-					ItemInfo* info = getItemInfo(item->getItemId());
+					ItemInfo* info = ItemInformationProvider::getItemInfo(item->getItemId());
 					if (info)
 					{
-						text(curPos.x + 23, curPos.y + 23 + 18, GLUT_BITMAP_HELVETICA_18, info->getName());
-						text(curPos.x + 23, curPos.y + 23 + 18 + 3 + 12, GLUT_BITMAP_HELVETICA_12, info->getDescription());
+						text(curPos.x + 23, curPos.y + 23 + 18, RenderFont::BITMAP_HELVETICA_18, info->getName());
+						text(curPos.x + 23, curPos.y + 23 + 18 + 3 + 12, RenderFont::BITMAP_HELVETICA_12, info->getDescription());
 					}
 					else
 					{
-						text(curPos.x + 23, curPos.y + 23 + 12, GLUT_BITMAP_HELVETICA_12, "Item information not loaded.");
+						text(curPos.x + 23, curPos.y + 23 + 12, RenderFont::BITMAP_HELVETICA_12, "Item information not loaded.");
 					}
 					popTransformMatrix();
 				}
@@ -6038,22 +5176,22 @@ protected:
 			Item* item = playerCraftingItems.getItem(slot);
 
 			glColor4f(0.0f, 0.0f, 0.0f, item ? 0.75f : 0.25f);
-			drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
+			Renderer::drawQuad2D(5 + (col * 52), 5 + (row * 52), 48, 48);
 			if (item)
 			{
 				glColor4f(1.0f, 1.0f, 1.0f, 0.25f);
-				text(5 + (col * 52), 5 + (row * 52) + 13, GLUT_BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
+				text(5 + (col * 52), 5 + (row * 52) + 13, RenderFont::BITMAP_8_BY_13, std::to_string(item->getItemId() / 1000000) + " - " + std::to_string(item->getItemId() % 1000000)); // debug
 
 				// show quantity for non-equips
 				if (item->getInventoryType() != InventoryType::EQUIP)
 				{
 					glColor3f(1.0f, 1.0f, 1.0f);
 					std::string quantityStr = std::to_string(item->getQuantity());
-					text(5 + (col * 52) + 45 - getStringWidth(GLUT_BITMAP_HELVETICA_12, quantityStr), 5 + (row * 52) + 45, GLUT_BITMAP_HELVETICA_12, quantityStr);
+					text(5 + (col * 52) + 45 - Renderer::getStringWidth(RenderFont::BITMAP_HELVETICA_12, quantityStr), 5 + (row * 52) + 45, RenderFont::BITMAP_HELVETICA_12, quantityStr);
 				}
 
 				// draw icon if loaded
-				ItemInfo* info = getItemInfo(item->getItemId());
+				ItemInfo* info = ItemInformationProvider::getItemInfo(item->getItemId());
 				if (info)
 				{
 					glPushMatrix();
@@ -6065,7 +5203,7 @@ protected:
 		}
 
 		glColor3f(0.0f, 0.0f, 0.0f);
-		text(170, 85, GLUT_BITMAP_HELVETICA_18, "->");
+		text(170, 85, RenderFont::BITMAP_HELVETICA_18, "->");
 
 		// show (potentially) crafted item
 		mUsableRecipe = 0;
@@ -6076,7 +5214,7 @@ protected:
 		Item* craftedItem = mUsableRecipe ? mUsableRecipe->createItem() : 0;
 
 		glColor4f(0.0f, 0.0f, 0.0f, craftedItem ? 0.75f : 0.25f);
-		drawQuad2D(200, 57, 48, 48);
+		Renderer::drawQuad2D(200, 57, 48, 48);
 
 		if (craftedItem)
 		{
@@ -6085,11 +5223,11 @@ protected:
 			{
 				glColor3f(1.0f, 1.0f, 1.0f);
 				std::string quantityStr = std::to_string(craftedItem->getQuantity());
-				text(200 + 45 - getStringWidth(GLUT_BITMAP_HELVETICA_12, quantityStr), 57 + 45, GLUT_BITMAP_HELVETICA_12, quantityStr);
+				text(200 + 45 - Renderer::getStringWidth(RenderFont::BITMAP_HELVETICA_12, quantityStr), 57 + 45, RenderFont::BITMAP_HELVETICA_12, quantityStr);
 			}
 
 			// draw icon if loaded
-			ItemInfo* info = getItemInfo(craftedItem->getItemId());
+			ItemInfo* info = ItemInformationProvider::getItemInfo(craftedItem->getItemId());
 			if (info)
 			{
 				glPushMatrix();
@@ -6242,7 +5380,7 @@ public:
 
 		// draw ray
 		glLineWidth(10.0f);
-		glColor4f(BYTE_TO_FLOAT_COLOR(225), BYTE_TO_FLOAT_COLOR(144), BYTE_TO_FLOAT_COLOR(255), alpha);
+		glColor4f(Renderer::BYTE_TO_FLOAT_COLOR(225), Renderer::BYTE_TO_FLOAT_COLOR(144), Renderer::BYTE_TO_FLOAT_COLOR(255), alpha);
 		glBegin(GL_LINES);
 		glVertex3f(mStartPoint.x, mStartPoint.y, mStartPoint.z);
 		glVertex3f(mEndPoint.x, mEndPoint.y, mEndPoint.z);
@@ -6327,45 +5465,45 @@ void updateRaycasterAutomaticFire()
 	}
 }
 
-class RaycasterBasicAttackSkill : public ICombatSkill
+class RaycasterBasicAttackSkill : public SkillInfo
 {
 public:
-	RaycasterBasicAttackSkill() : ICombatSkill("Raycast Mastery") {}
+	RaycasterBasicAttackSkill() : SkillInfo("Raycast Mastery") {}
 
 	virtual void attemptCast() { shootRaycaster(0); }
 
 	virtual void drawIcon()
 	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(225));
-		drawQuad2D(11, 15, 8, 19);
+		Renderer::color3b(112, 112, 225);
+		Renderer::drawQuad2D(11, 15, 8, 19);
 	}
 };
 
-class RaycasterPowerShotSkill : public ICombatSkill
+class RaycasterPowerShotSkill : public SkillInfo
 {
 public:
-	RaycasterPowerShotSkill() : ICombatSkill("Raycast Power Shot") {}
+	RaycasterPowerShotSkill() : SkillInfo("Raycast Power Shot") {}
 
 	virtual void attemptCast() { shootRaycaster(1); }
 
 	virtual void drawIcon()
 	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(25), BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(201));
-		drawQuad2D(11, 15, 8, 19);
+		Renderer::color3b(25, 255, 201);
+		Renderer::drawQuad2D(11, 15, 8, 19);
 	}
 };
 
-class RaycasterBlastShotSkill : public ICombatSkill
+class RaycasterBlastShotSkill : public SkillInfo
 {
 public:
-	RaycasterBlastShotSkill() : ICombatSkill("Raycast Blast Shot") {}
+	RaycasterBlastShotSkill() : SkillInfo("Raycast Blast Shot") {}
 
 	virtual void attemptCast() { shootRaycaster(2); }
 
 	virtual void drawIcon()
 	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(79), BYTE_TO_FLOAT_COLOR(56));
-		drawQuad2D(11, 15, 8, 19);
+		Renderer::color3b(255, 79, 56);
+		Renderer::drawQuad2D(11, 15, 8, 19);
 	}
 };
 
@@ -6431,7 +5569,7 @@ public:
 
 		// draw ray
 		glLineWidth(10.0f);
-		glColor4f(BYTE_TO_FLOAT_COLOR(146), BYTE_TO_FLOAT_COLOR(144), BYTE_TO_FLOAT_COLOR(56), alpha);
+		glColor4f(Renderer::BYTE_TO_FLOAT_COLOR(146), Renderer::BYTE_TO_FLOAT_COLOR(144), Renderer::BYTE_TO_FLOAT_COLOR(56), alpha);
 		glBegin(GL_LINES);
 		glVertex3f(mStartPoint.x, mStartPoint.y, mStartPoint.z);
 		glVertex3f(mEndPoint.x, mEndPoint.y, mEndPoint.z);
@@ -6453,48 +5591,48 @@ void startChargeDash(int mode)
 	skillEffects.push_back(std::unique_ptr<ISkillEffect>(new ChargeDash(mode)));
 }
 
-class ChargeDashBasicSkill : public ICombatSkill
+class ChargeDashBasicSkill : public SkillInfo
 {
 public:
-	ChargeDashBasicSkill() : ICombatSkill("Charge Dash (Basic)") {}
+	ChargeDashBasicSkill() : SkillInfo("Charge Dash (Basic)") {}
 
 	virtual void attemptCast() { startChargeDash(1); }
 
 	virtual void drawIcon()
 	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(112), BYTE_TO_FLOAT_COLOR(225));
-		drawQuad2D(11, 15, 8, 19);
-		drawQuad2D(19, 15, 19, 8);
+		Renderer::color3b(112, 112, 225);
+		Renderer::drawQuad2D(11, 15, 8, 19);
+		Renderer::drawQuad2D(19, 15, 19, 8);
 	}
 };
 
-class ChargeDashRushSkill : public ICombatSkill
+class ChargeDashRushSkill : public SkillInfo
 {
 public:
-	ChargeDashRushSkill() : ICombatSkill("Charge Dash (Rush)") {}
+	ChargeDashRushSkill() : SkillInfo("Charge Dash (Rush)") {}
 
 	virtual void attemptCast() { startChargeDash(2); }
 
 	virtual void drawIcon()
 	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(25), BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(201));
-		drawQuad2D(11, 15, 8, 19);
-		drawQuad2D(19, 15, 19, 8);
+		Renderer::color3b(25, 255, 201);
+		Renderer::drawQuad2D(11, 15, 8, 19);
+		Renderer::drawQuad2D(19, 15, 19, 8);
 	}
 };
 
-class ChargeDashSweepSkill : public ICombatSkill
+class ChargeDashSweepSkill : public SkillInfo
 {
 public:
-	ChargeDashSweepSkill() : ICombatSkill("Charge Dash (Sweep)") {}
+	ChargeDashSweepSkill() : SkillInfo("Charge Dash (Sweep)") {}
 
 	virtual void attemptCast() { startChargeDash(3); }
 
 	virtual void drawIcon()
 	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(79), BYTE_TO_FLOAT_COLOR(56));
-		drawQuad2D(11, 15, 8, 19);
-		drawQuad2D(19, 15, 19, 8);
+		Renderer::color3b(255, 79, 56);
+		Renderer::drawQuad2D(11, 15, 8, 19);
+		Renderer::drawQuad2D(19, 15, 19, 8);
 	}
 };
 
@@ -6502,13 +5640,7 @@ public:
 
 #pragma region NPC Interface
 
-class INPC
-{
-public:
-	virtual void onClick() = 0;
-};
-
-class TraderNPC : public INPC
+class TraderNPC : public NpcInfo
 {
 public:
 	virtual void onClick()
@@ -6516,61 +5648,19 @@ public:
 		addInformationHistory("Clicked on trader");
 		clearShopItems();
 		for (int i = 1; i <= 10; i++) { addShopItem(i); }
-		getUIWindowByTitle("Shop")->setVisible(true);
+		UIWindowManager::getWindowByTitle("Shop")->setVisible(true);
 	}
 };
 
-class BankNPC : public INPC
+class BankNPC : public NpcInfo
 {
 public:
 	virtual void onClick()
 	{
 		addInformationHistory("Clicked on bank");
-		getUIWindowByTitle("Bank")->setVisible(true);
+		UIWindowManager::getWindowByTitle("Bank")->setVisible(true);
 	}
 };
-
-std::unordered_map<int, std::unique_ptr<INPC>> registeredNPCs;
-
-void registerNPC(int id, INPC* iface) { registeredNPCs[id].reset(iface); }
-
-struct LoadedNPC
-{
-	int id;
-	glm::vec3 position;
-
-	LoadedNPC(int _id, const glm::vec3& _pos) : id(_id), position(_pos) {}
-
-	void draw()
-	{
-		glColor3f(0.0f, 0.0f, 1.0f);
-		glPushMatrix();
-		glTranslatef(position.x, position.y + 1, position.z);
-		glutWireCube(2.0f);
-		glPopMatrix();
-	}
-};
-
-std::vector<std::unique_ptr<LoadedNPC>> loadedNPCs;
-
-LoadedNPC* loadNPC(int id, const glm::vec3& pos)
-{
-	LoadedNPC* ret = new LoadedNPC(id, pos);
-	loadedNPCs.push_back(std::unique_ptr<LoadedNPC>(ret));
-	return ret;
-}
-
-void unloadNPC(int id)
-{
-	for (unsigned int i = 0; i < loadedNPCs.size(); i++)
-	{
-		if (loadedNPCs[i]->id == id)
-		{
-			loadedNPCs.erase(loadedNPCs.begin() + i);
-			break;
-		}
-	}
-}
 
 #pragma endregion
 
@@ -6607,19 +5697,19 @@ private:
 		if (type == Type::OAK)
 		{
 			trunkColor.r = 137;
-			trunkColor.g = getRandomInt(30, 90);
+			trunkColor.g = Randomizer::getRandomInt(30, 90);
 			trunkColor.b = 0;
 		}
 		else if (type == Type::BIRCH)
 		{
-			trunkColor.r = getRandomInt(110, 130);
-			trunkColor.g = getRandomInt(110, 130);
-			trunkColor.b = getRandomInt(110, 130);
+			trunkColor.r = Randomizer::getRandomInt(110, 130);
+			trunkColor.g = Randomizer::getRandomInt(110, 130);
+			trunkColor.b = Randomizer::getRandomInt(110, 130);
 		}
 		else if (type == Type::SPRUCE)
 		{
 			trunkColor.r = 127;
-			trunkColor.g = getRandomInt(15, 50);
+			trunkColor.g = Randomizer::getRandomInt(15, 50);
 			trunkColor.b = 25;
 		}
 		return trunkColor;
@@ -6630,20 +5720,20 @@ private:
 		glm::ivec3 leavesColor;
 		if (type == Type::OAK)
 		{
-			leavesColor.r = getRandomInt(100, 135);
-			leavesColor.g = getRandomInt(100, 135);
+			leavesColor.r = Randomizer::getRandomInt(100, 135);
+			leavesColor.g = Randomizer::getRandomInt(100, 135);
 			leavesColor.b = 0;
 		}
 		else if (type == Type::BIRCH)
 		{
-			leavesColor.r = getRandomInt(140, 165);
-			leavesColor.g = getRandomInt(140, 165);
+			leavesColor.r = Randomizer::getRandomInt(140, 165);
+			leavesColor.g = Randomizer::getRandomInt(140, 165);
 			leavesColor.b = 0;
 		}
 		else if (type == Type::SPRUCE)
 		{
-			leavesColor.r = getRandomInt(50, 80);
-			leavesColor.g = getRandomInt(50, 80);
+			leavesColor.r = Randomizer::getRandomInt(50, 80);
+			leavesColor.g = Randomizer::getRandomInt(50, 80);
 			leavesColor.b = 0;
 		}
 		return leavesColor;
@@ -6653,10 +5743,10 @@ public:
 	TerrainTree(int x, int y, int z)
 	{
 		position = glm::ivec3(x, y, z);
-		height = getRandomInt(4, 8);
-		shape = glm::ivec3(getRandomInt(2, 7), getRandomInt(1, height / 2), getRandomInt(2, 7));
-		levels = getRandomInt(1, 4);
-		type = (Type)getRandomInt(0, 2); // don't use jungle for now
+		height = Randomizer::getRandomInt(4, 8);
+		shape = glm::ivec3(Randomizer::getRandomInt(2, 7), Randomizer::getRandomInt(1, height / 2), Randomizer::getRandomInt(2, 7));
+		levels = Randomizer::getRandomInt(1, 4);
+		type = (Type)Randomizer::getRandomInt(0, 2); // don't use jungle for now
 
 		// calculate relevant chunks
 		glm::ivec3 chunkStart(getVoxelChunkPos(x, y, z));
@@ -6715,7 +5805,7 @@ public:
 						glm::ivec3 curPos(xx, yy, zz);
 						if (curPos >= chunkStart && curPos <= chunkEnd)
 						{
-							if (getRandomInt(1, 10) >= 3)
+							if (Randomizer::getRandomInt(1, 10) >= 3)
 							{
 								setVoxel(curPos.x, curPos.y + height + (shape.y * ll * 2), curPos.z, getLeavesColor());
 							}
@@ -6887,7 +5977,7 @@ private:
 		MazeWall lastDirection = MazeWall::INVALID;
 		for (int curMoves = 0; curMoves < mazeMoveLimit; curMoves++)
 		{
-			MazeWall direction = (MazeWall)getRandomInt(0, 3);
+			MazeWall direction = (MazeWall)Randomizer::getRandomInt(0, 3);
 			if (lastDirection != MazeWall::INVALID)
 			{
 				// don't just go forwards and backwards, and don't attempt a move we just confirmed is invalid either
@@ -6905,10 +5995,10 @@ private:
 					{
 						printf("UNKOWN MAZE ERROR!\n");
 					}
-					direction = (MazeWall)getRandomInt(0, 3);
+					direction = (MazeWall)Randomizer::getRandomInt(0, 3);
 				}
 			}
-			int len = getRandomInt(2, 8);
+			int len = Randomizer::getRandomInt(2, 8);
 
 			for (int i = 0; i < len; i++)
 			{
@@ -6927,18 +6017,18 @@ private:
 	void setWallVoxel(int x, int y, int z)
 	{
 		setVoxel(x, y, z,
-			getRandomInt(0, mThemeId == 2 ? 75 : 15),
-			getRandomInt(0, mThemeId == 1 ? 75 : 15),
-			getRandomInt(0, mThemeId == 3 ? 75 : 15)
+			Randomizer::getRandomInt(0, mThemeId == 2 ? 75 : 15),
+			Randomizer::getRandomInt(0, mThemeId == 1 ? 75 : 15),
+			Randomizer::getRandomInt(0, mThemeId == 3 ? 75 : 15)
 		);
 	}
 
 	void setFloorVoxel(int x, int y, int z)
 	{
 		setVoxel(x, y, z,
-			getRandomInt(mThemeId == 2 ? 100 : 0, mThemeId == 2 ? 255 : 30),
-			getRandomInt(mThemeId == 1 ? 100 : 0, mThemeId == 1 ? 255 : 30),
-			getRandomInt(mThemeId == 3 ? 100 : 0, mThemeId == 3 ? 255 : 30)
+			Randomizer::getRandomInt(mThemeId == 2 ? 100 : 0, mThemeId == 2 ? 255 : 30),
+			Randomizer::getRandomInt(mThemeId == 1 ? 100 : 0, mThemeId == 1 ? 255 : 30),
+			Randomizer::getRandomInt(mThemeId == 3 ? 100 : 0, mThemeId == 3 ? 255 : 30)
 		);
 	}
 
@@ -6998,7 +6088,7 @@ public:
 		{
 			for (int i = 0; i < 10; i++)
 			{
-				glm::ivec2 pos = mazeClearedTiles[getRandomInt(3, mazeClearedTiles.size() - 1)];
+				glm::ivec2 pos = mazeClearedTiles[Randomizer::getRandomInt(3, mazeClearedTiles.size() - 1)];
 				// TODO: currently assumes mobId == themeId. needs flexibility.
 				spawnPoints.push_back(std::unique_ptr<EnemySpawnPoint>(new EnemySpawnPoint(glm::vec3(mPosition.x + (pos.x * 16) + 3, 0.0f, mPosition.z + (pos.y * 16) + 3), mMovementController.get(), mThemeId)));
 			}
@@ -7080,7 +6170,7 @@ public:
 			}
 
 			// also add a tree in the center
-			setTree(chunkStart.x + getRandomInt(3, 10), 0, chunkStart.z + getRandomInt(3, 10));
+			setTree(chunkStart.x + Randomizer::getRandomInt(3, 10), 0, chunkStart.z + Randomizer::getRandomInt(3, 10));
 		}
 
 		// mark as a dungeon generated chunk
@@ -7147,7 +6237,7 @@ BiomeType getChunkBiome(int x, int z)
 	auto it = loadedBiomes.find(pos);
 	if (it != loadedBiomes.end()) { return it->second; }
 
-	BiomeType ret = (BiomeType)getRandomInt((int)BiomeType::FOREST, (int)BiomeType::MOUNTAINS);
+	BiomeType ret = (BiomeType)Randomizer::getRandomInt((int)BiomeType::FOREST, (int)BiomeType::MOUNTAINS);
 	loadedBiomes[pos] = ret;
 	return ret;
 }
@@ -7162,21 +6252,13 @@ VisibleRegionBorder* landOwnershipBorder;
 VisibleRegionBorder* wildernessBorder;
 VisibleRegionBorder* dangerousWildBorder;
 
-std::vector<glm::ivec3> ownedChunks;
-
-bool isChunkClaimed(const glm::ivec3& pos)
-{
-	for (auto i : ownedChunks) { if (i == pos) { return true; } }
-	return false;
-}
-
 bool isChunkClaimable(const glm::ivec3& pos)
 {
 	glm::vec3 cwp(chunkToWorldPos(pos));
 	return !landOwnershipBorder->containsPoint(cwp) && wildernessBorder->containsPoint(cwp);
 }
 
-bool canClaimChunk(const glm::ivec3& pos) { return !isChunkClaimed(pos) && isChunkClaimable(pos); }
+bool isChunkClaimed(const glm::ivec3& pos) { return mChunks[pos]->mOwnerId == 1; }
 
 class ClaimChunkDialogueWindow : public IDialogueWindow
 {
@@ -7197,22 +6279,50 @@ public:
 	virtual std::string getDescription() { return "Allows you to claim ownership of a chunk."; }
 	virtual void drawIcon()
 	{
-		glColor3f(BYTE_TO_FLOAT_COLOR(131), BYTE_TO_FLOAT_COLOR(138), BYTE_TO_FLOAT_COLOR(142));
-		drawQuad2D(12, 12, 24, 24);
-		drawQuad2D(18, 10, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(77), BYTE_TO_FLOAT_COLOR(81), BYTE_TO_FLOAT_COLOR(84));
-		drawQuad2D(18, 8, 12, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(173), BYTE_TO_FLOAT_COLOR(183), BYTE_TO_FLOAT_COLOR(188));
-		drawQuad2D(20, 12, 8, 2);
-		drawQuad2D(14, 14, 20, 2);
-		glColor3f(BYTE_TO_FLOAT_COLOR(50), BYTE_TO_FLOAT_COLOR(255), BYTE_TO_FLOAT_COLOR(140));
-		drawQuad2D(14, 16, 20, 18);
+		Renderer::color3b(131, 138, 142);
+		Renderer::drawQuad2D(12, 12, 24, 24);
+		Renderer::drawQuad2D(18, 10, 12, 2);
+		Renderer::color3b(77, 81, 84);
+		Renderer::drawQuad2D(18, 8, 12, 2);
+		Renderer::color3b(173, 183, 188);
+		Renderer::drawQuad2D(20, 12, 8, 2);
+		Renderer::drawQuad2D(14, 14, 20, 2);
+		Renderer::color3b(50, 255, 140);
+		Renderer::drawQuad2D(14, 16, 20, 18);
 	}
 	virtual void onUse(CombatEntity* user)
 	{
+		static long long OWNERSHIP_DURATION = 1000LL * 60 * 60 * 24 * 30; // 1 month
+
+		bool success = false;
 		glm::ivec3 chunkPos(getVoxelChunkPos(getPlayerPositionVoxelPos()));
-		bool success = canClaimChunk(chunkPos);
-		if (success) { ownedChunks.push_back(chunkPos); }
+		if (isChunkClaimable(chunkPos))
+		{
+			VolumeChunk* chunk = mChunks[chunkPos].get();
+			if (chunk->mOwnerId != 0 && chunk->mOwnerId != 1)
+			{
+				addInformationHistory("This chunk is already owned by someone else.");
+			}
+			else
+			{
+				success = true;
+
+				if (chunk->mOwnerId == 0) // newly claiming
+				{
+					chunk->mOwnerId = 1;
+					chunk->mOwnershipStartTime = Tools::currentTimeMillis();
+					chunk->mOwnershipDuration = OWNERSHIP_DURATION;
+				}
+				else if (chunk->mOwnerId == 1 && chunk->getRemainingOwnershipTime() >= 0) // safe extention
+				{
+					chunk->mOwnershipDuration += OWNERSHIP_DURATION;
+				}
+				else // dangerous extention (already expired but not unloaded since expiration)
+				{
+					chunk->mOwnershipDuration += chunk->getRemainingOwnershipTime() + OWNERSHIP_DURATION;
+				}
+			}
+		}
 		showDialogueWindow(new ClaimChunkDialogueWindow(success, chunkPos));
 	}
 };
@@ -7277,9 +6387,9 @@ void voxelEditorModify(bool place)
 	VoxelType usedType;
 	if (place)
 	{
-		usedType.r = getRandomInt(0, 255);
-		usedType.g = getRandomInt(0, 255);
-		usedType.b = getRandomInt(0, 255);
+		usedType.r = Randomizer::getRandomInt(0, 255);
+		usedType.g = Randomizer::getRandomInt(0, 255);
+		usedType.b = Randomizer::getRandomInt(0, 255);
 		usedType.a = 255;
 	}
 	else { usedType = EmptyVoxelType; }
@@ -7358,12 +6468,12 @@ void loadConfig()
 		playerEntity->setHP(playerEntity->getMaxHP());
 
 		// TODO: remove! TEMP, TESTING
-		playerInventoryItems.addItem(createEquipById(1492001));
-		playerInventoryItems.addItem(createEquipById(1492002));
-		playerInventoryItems.addItem(createEquipById(1492003));
-		playerInventoryItems.addItem(createEquipById(1492004));
-		playerInventoryItems.addItem(createEquipById(1492005));
-		playerInventoryItems.addItem(createEquipById(1492006));
+		playerInventoryItems.addItem(ItemInformationProvider::createEquipById(1492001));
+		playerInventoryItems.addItem(ItemInformationProvider::createEquipById(1492002));
+		playerInventoryItems.addItem(ItemInformationProvider::createEquipById(1492003));
+		playerInventoryItems.addItem(ItemInformationProvider::createEquipById(1492004));
+		playerInventoryItems.addItem(ItemInformationProvider::createEquipById(1492005));
+		playerInventoryItems.addItem(ItemInformationProvider::createEquipById(1492006));
 		playerInventoryItems.addItem(new Item(2000001, 1000));
 		playerInventoryItems.addItem(new Item(2000002, 1000));
 		playerInventoryItems.addItem(new Item(2000003, 1000));
@@ -7456,13 +6566,6 @@ void saveConfig()
 
 #pragma region Enemy Item Dropping
 
-// use unordered_map<int, entry> for mob-specific droptables, i used this for simplicity
-std::vector<std::unique_ptr<EnemyDropEntry>> enemyDropEntries;
-
-void addEnemyDropEntry(int itemId, int chance, int minimum, int maximum) { enemyDropEntries.push_back(std::unique_ptr<EnemyDropEntry>(new EnemyDropEntry(itemId, chance, minimum, maximum))); }
-
-void addEnemyDropEntry(int itemId, int chance) { addEnemyDropEntry(itemId, chance, 1, 1); }
-
 class DroppedItem
 {
 private:
@@ -7490,7 +6593,7 @@ public:
 		glRotatef(flareFactor * 2.0f * 57.2958f, 0.0f, 1.0f, 0.0f); // flare rotate
 		glTranslatef(-24.0f, 0.0f, 0.0f); // center for rotation
 		//glutSolidCube(0.25f);
-		getItemInfo(mItem->getItemId())->drawIcon();
+		ItemInformationProvider::getItemInfo(mItem->getItemId())->drawIcon();
 		glPopMatrix();
 	}
 };
@@ -7502,15 +6605,15 @@ class EnemyDropItemListener : public ICombatEntityListener
 public:
 	virtual void onKilled(CombatEntity* entity)
 	{
-		for (auto& entry : enemyDropEntries)
+		for (auto& entry : EnemyInformationProvider::getDropEntries())
 		{
-			if (getRandomInt(0, 999999) < entry->getChance())
+			if (Randomizer::getRandomInt(0, 999999) < entry->getChance())
 			{
 				Item* dropped = 0;
 
 				if (entry->getItemId() == 0) {} // reserved for currency
-				else if (getItemInventoryType(entry->getItemId()) == InventoryType::EQUIP) { dropped = randomizeStats(createEquipById(entry->getItemId())); }
-				else { dropped = new Item(entry->getItemId(), getRandomInt(entry->getMinimum(), entry->getMaximum())); }
+				else if (getItemInventoryType(entry->getItemId()) == InventoryType::EQUIP) { dropped = ItemInformationProvider::randomizeStats(ItemInformationProvider::createEquipById(entry->getItemId())); }
+				else { dropped = new Item(entry->getItemId(), Randomizer::getRandomInt(entry->getMinimum(), entry->getMaximum())); }
 
 				droppedItems.push_back(std::unique_ptr<DroppedItem>(new DroppedItem(dropped, ((Enemy*)entity)->getPosition())));
 			}
@@ -7541,11 +6644,11 @@ public:
 	virtual void onOk()
 	{
 		currentWave = 1;
-		unloadNPC(2);
+		NpcManager::unloadNpc(2);
 	}
 };
 
-class WaveEnterNPC : public INPC
+class WaveEnterNPC : public NpcInfo
 {
 public:
 	virtual void onClick()
@@ -7574,13 +6677,13 @@ public:
 			{
 				lastWaveEndTime = Tools::currentTimeMillis();
 				waveTransition = true;
-				loadNPC(1, glm::vec3());
+				NpcManager::loadNpc(1, glm::vec3());
 			}
 			else
 			{
 				currentWave = 0;
 				waveEnemiesKilled = 0;
-				loadNPC(2, glm::vec3(10, 0, 10));
+				NpcManager::loadNpc(2, glm::vec3(10, 0, 10));
 				showDialogueWindow(new WavesCompleteDialogueWindow());
 			}
 		}
@@ -7602,7 +6705,7 @@ public:
 	{
 		currentWave = 0;
 		waveEnemiesKilled = 0;
-		loadNPC(2, glm::vec3(10, 0, 10));
+		NpcManager::loadNpc(2, glm::vec3(10, 0, 10));
 		enemies.clear();
 		for (auto& i : spawnPoints) { i->reset(); }
 		//droppedItems.clear();
@@ -7637,8 +6740,8 @@ void updateWaveTransition()
 		currentWave++;
 		waveEnemiesKilled = 0;
 		waveTransition = false;
-		unloadNPC(1);
-		getUIWindowByTitle("Shop")->setVisible(false);
+		NpcManager::unloadNpc(1);
+		UIWindowManager::getWindowByTitle("Shop")->setVisible(false);
 	}
 }
 
@@ -7677,7 +6780,7 @@ void initNoiseChunk(int x, int y, int z)
 				n *= 16.0;
 				if (yy <= (int)std::floor(n))
 				{
-					setVoxel(xx, yy, zz, getRandomInt(biome->redLow, biome->redHigh), getRandomInt(biome->greenLow, biome->greenHigh), getRandomInt(biome->blueLow, biome->blueHigh));
+					setVoxel(xx, yy, zz, Randomizer::getRandomInt(biome->redLow, biome->redHigh), Randomizer::getRandomInt(biome->greenLow, biome->greenHigh), Randomizer::getRandomInt(biome->blueLow, biome->blueHigh));
 				}
 			}
 		}
@@ -7698,7 +6801,7 @@ void loadPortalChunks(Portal* portal)
 }
 
 // load npc heights
-void loadNpcChunks(LoadedNPC* npc)
+void loadNpcChunks(Npc* npc)
 {
 	const glm::vec3& basePos = npc->position;
 	glm::ivec3 chunkPos = getVoxelChunkPos(glm::ivec3((int)basePos.x, (int)basePos.y, (int)basePos.z));
@@ -7713,7 +6816,7 @@ void loadNpcChunks(LoadedNPC* npc)
 void loadTown(const glm::ivec3& pos, const glm::ivec3& trainingGroundOffset, const std::string& name, bool npcs, int dungeonDifficulty)
 {
 	// TODO: dungeon theme shouldn't be random
-	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(pos.x, pos.z, dungeonDifficulty, getRandomInt(1, 3))));
+	dungeons.push_back(std::unique_ptr<Dungeon>(new Dungeon(pos.x, pos.z, dungeonDifficulty, Randomizer::getRandomInt(1, 3))));
 
 	Portal* portal = addPortal(pos.x + 1024 - 20, 0, pos.z + 1024 - 20, name + " Portal");
 	loadPortalChunks(portal);
@@ -7721,7 +6824,7 @@ void loadTown(const glm::ivec3& pos, const glm::ivec3& trainingGroundOffset, con
 	// wilderness towns don't load npcs
 	if (npcs)
 	{
-		LoadedNPC* npc = loadNPC(3, glm::vec3(pos.x + 1024 - 40, 0, pos.z + 1024 - 40));
+		Npc* npc = NpcManager::loadNpc(3, glm::vec3(pos.x + 1024 - 40, 0, pos.z + 1024 - 40));
 		loadNpcChunks(npc);
 	}
 
@@ -7746,11 +6849,11 @@ void loadNewChunks()
 			if (glm::distance(playerPos, glm::vec3(dungeon->getPosition())) < 4096) { tooClose = true; break; }
 		}
 
-		if (!tooClose && getRandomInt(0, 5) > 3)
+		if (!tooClose && Randomizer::getRandomInt(0, 5) > 3)
 		{
 			int difficulty = (int)std::floorf(glm::distance(glm::vec3(std::abs(playerPos.x), 0.0f, std::abs(playerPos.z)), glm::vec3()) / 2048.0f);
 			printf("Generating periodic wilderness dungeon at (%d, %d, %d) with difficulty %d\n", (int)playerPos.x, (int)playerPos.y, (int)playerPos.z, difficulty);
-			loadTown(playerPos, glm::ivec3(), "Random Dungeon " + std::to_string(getRandomInt()), false, difficulty);
+			loadTown(playerPos, glm::ivec3(), "Random Dungeon " + std::to_string(Randomizer::getRandomInt()), false, difficulty);
 		}
 	}
 
@@ -7793,7 +6896,7 @@ void loadNewChunks()
 		int yyStart = c.y * 16;
 		int zzStart = c.z * 16;
 
-		glm::ivec3 treeStart(xxStart + getRandomInt(3, 7), yyStart, zzStart + getRandomInt(3, 7));
+		glm::ivec3 treeStart(xxStart + Randomizer::getRandomInt(3, 7), yyStart, zzStart + Randomizer::getRandomInt(3, 7));
 		// no tree spawns if ground doesn't exist on this chunk
 		if (getVoxel(treeStart).a != 0)
 		{
@@ -7936,7 +7039,7 @@ void drawGameMap(float elapsed)
 		if (it->get()->completed()) { it = skillEffects.erase(it); } else { it++; }
 	}
 	for (auto& i : droppedItems) { i.get()->draw(); }
-	for (auto& i : loadedNPCs) { i->draw(); }
+	for (auto& i : NpcManager::getNpcs()) { i->draw(); }
 	for (auto& i : portals) { i->draw(); }
 	for (auto& i : visibleRegionBorders) { i->draw(); }
 
@@ -7997,9 +7100,9 @@ void renderScene()
 			glColor3f(1.0f, 0.0f, 0.0f);
 			//printf("Bar pos: %d, %d, %d\n", (int)barWinX, (int)barWinY, (int)barWinZ);
 			glColor4f(1.0f, 0.0f, 0.0f, 0.2f);
-			drawQuad2D((int)barPos.x - 25, (int)barPos.y, 50, 15);
+			Renderer::drawQuad2D((int)barPos.x - 25, (int)barPos.y, 50, 15);
 			glColor4f(1.0f, 0.0f, 0.0f, 0.8f);
-			drawQuad2D((int)barPos.x - 25, (int)barPos.y, calcProgressWidth(enemy->getHP(), enemy->getMaxHP(), 50), 15);
+			Renderer::drawQuad2D((int)barPos.x - 25, (int)barPos.y, calcProgressWidth(enemy->getHP(), enemy->getMaxHP(), 50), 15);
 		}
 	}
 
@@ -8007,8 +7110,8 @@ void renderScene()
 	int windowCenterX = windowWidth / 2;
 	int windowCenterY = windowHeight / 2;
 	glColor4f(0.5f, 0.5f, 0.5f, 0.75f);
-	drawQuad2D(windowCenterX - 25, windowCenterY - 2, 50, 4);
-	drawQuad2D(windowCenterX - 2, windowCenterY - 25, 4, 50);
+	Renderer::drawQuad2D(windowCenterX - 25, windowCenterY - 2, 50, 4);
+	Renderer::drawQuad2D(windowCenterX - 2, windowCenterY - 25, 4, 50);
 
 	// Update FPS
 	fpsFrameCount++;
@@ -8022,71 +7125,88 @@ void renderScene()
 	// display various stats
 	glColor3f(0.0f, 0.0f, 0.0f);
 	//drawLoadedMapleMapStatistics();
-	renderSpacedBitmapString(10, 30, 0, GLUT_BITMAP_HELVETICA_18, fpsStr);
+	Renderer::renderString(10, 30, RenderFont::BITMAP_HELVETICA_18, fpsStr);
 
 	std::string spStr = "Spawn Points: " + std::to_string(spawnPoints.size());
 	std::string enStr = "Enemies: " + std::to_string(enemies.size());
 	std::string skStr = "Skill Effects: " + std::to_string(skillEffects.size());
-	renderString(10, 70, GLUT_BITMAP_HELVETICA_18, spStr);
-	renderString(10, 90, GLUT_BITMAP_HELVETICA_18, enStr);
-	renderString(10, 110, GLUT_BITMAP_HELVETICA_18, skStr);
+	Renderer::renderString(10, 70, RenderFont::BITMAP_HELVETICA_18, spStr);
+	Renderer::renderString(10, 90, RenderFont::BITMAP_HELVETICA_18, enStr);
+	Renderer::renderString(10, 110, RenderFont::BITMAP_HELVETICA_18, skStr);
 
 	if (currentWave > 0)
 	{
 		std::string wvStr = "Wave " + std::to_string(currentWave) + " / " + std::to_string(highestWave) + " - Killed " + std::to_string(waveEnemiesKilled) + " / " + std::to_string(getWaveEnemyCount(currentWave));
 		std::string wsStr = "Wave " + (waveTransition ? "Transition (" + std::to_string((getWaveRemainingTransitionTime() / 1000) + 1) + " sec left)" : "Active (" + std::to_string(getWaveEnemySpawnsRemaining()) + " more spawns)");
-		renderString(10, 130, GLUT_BITMAP_HELVETICA_18, wvStr);
-		renderString(10, 150, GLUT_BITMAP_HELVETICA_18, wsStr);
+		Renderer::renderString(10, 130, RenderFont::BITMAP_HELVETICA_18, wvStr);
+		Renderer::renderString(10, 150, RenderFont::BITMAP_HELVETICA_18, wsStr);
 	}
 	else
 	{
-		renderString(10, 130, GLUT_BITMAP_HELVETICA_18, "Waves Disabled");
+		Renderer::renderString(10, 130, RenderFont::BITMAP_HELVETICA_18, "Waves Disabled");
 	}
 
 	std::string vxStr = "Active Chunks: " + std::to_string(mChunks.size()) + " | Extracting: " + std::to_string(activeSurfaceExtractionThreads) + " | Render Dist: " + std::to_string(volumeRenderDistance);
-	renderString(5, 190, GLUT_BITMAP_HELVETICA_18, vxStr);
+	Renderer::renderString(5, 190, RenderFont::BITMAP_HELVETICA_18, vxStr);
 	glm::ivec3 playerVoxel(getPlayerPositionVoxelPos());
-	std::string vpStr = "Player Voxel Pos: " + to_string(playerVoxel) + " | Chunk: " + to_string(getVoxelChunkPos(playerVoxel.x, playerVoxel.y, playerVoxel.z));
-	renderString(5, 210, GLUT_BITMAP_HELVETICA_18, vpStr);
+	glm::ivec3 playerChunkPos(getVoxelChunkPos(playerVoxel.x, playerVoxel.y, playerVoxel.z));
+	VolumeChunk* playerChunk = mChunks[playerChunkPos].get();
+	std::string vpStr = "Player Voxel Pos: " + to_string(playerVoxel) + " | Chunk: " + to_string(playerChunkPos) + " | Owner: " + (playerChunk->mOwnerId == 1 ? "You" : "None");
+	if (playerChunk->mOwnerId != 0)
+	{
+		long long millis = playerChunk->getRemainingOwnershipTime();
+		if (millis < 0) { millis = 0; }
+
+		long long secBase = millis / 1000LL;
+		int secs = secBase % 60;
+		long long minBase = secBase / 60LL;
+		int mins = minBase % 60;
+		int hourBase = (int)(minBase / 60LL);
+		int hours = hourBase % 24;
+		int days = hourBase / 24;
+
+		vpStr += " | Own Time Remaining: " + std::to_string(days) + ":" + std::to_string(hours) + ":"+ std::to_string(mins) + ":" + std::to_string(secs);
+	}
+	Renderer::renderString(5, 210, RenderFont::BITMAP_HELVETICA_18, vpStr);
 	std::string cpStr = "Camera: (" + to_string(glm::vec3(cx, cy, cz)) + ") -> (" + to_string(glm::vec3(lx, ly, lz)) + ")";
-	renderString(5, 230, GLUT_BITMAP_HELVETICA_18, cpStr);
+	Renderer::renderString(5, 230, RenderFont::BITMAP_HELVETICA_18, cpStr);
 	std::string veStr = "VEdit :: Air: (" + to_string(voxelEditAir) + ") | Solid: (" + to_string(voxelEditSolid) + ")";
-	renderString(5, 250, GLUT_BITMAP_HELVETICA_18, veStr);
+	Renderer::renderString(5, 250, RenderFont::BITMAP_HELVETICA_18, veStr);
 
 	// render stat bars at the bottom
 
 	// hp bar
 	glColor4f(1.0f, 0.0f, 0.0f, 0.5f);
-	drawQuad2D(0, windowHeight - 50, windowWidth / 2, 25);
+	Renderer::drawQuad2D(0, windowHeight - 50, windowWidth / 2, 25);
 	glColor4f(1.0f, 0.0f, 0.0f, 0.8f);
-	drawQuad2D(0, windowHeight - 50, calcProgressWidth(playerEntity->getHP(), playerEntity->getMaxHP(), windowWidth / 2), 25);
+	Renderer::drawQuad2D(0, windowHeight - 50, calcProgressWidth(playerEntity->getHP(), playerEntity->getMaxHP(), windowWidth / 2), 25);
 	glColor3f(0.0f, 0.0f, 0.0f);
-	renderString(windowWidth / 4, windowHeight - 30, GLUT_BITMAP_HELVETICA_18, std::string("HP: ") + std::to_string(playerEntity->getHP()) + " / " + std::to_string(playerEntity->getMaxHP()));
+	Renderer::renderString(windowWidth / 4, windowHeight - 30, RenderFont::BITMAP_HELVETICA_18, std::string("HP: ") + std::to_string(playerEntity->getHP()) + " / " + std::to_string(playerEntity->getMaxHP()));
 	// mp bar
 	glColor4f(0.0f, 0.0f, 1.0f, 0.5f);
-	drawQuad2D(windowWidth / 2, windowHeight - 50, windowWidth / 2, 25);
+	Renderer::drawQuad2D(windowWidth / 2, windowHeight - 50, windowWidth / 2, 25);
 	glColor4f(0.0f, 0.0f, 1.0f, 0.8f);
-	drawQuad2D(windowWidth / 2, windowHeight - 50, calcProgressWidth(playerEntity->getMP(), playerEntity->getMaxMP(), windowWidth / 2), 25);
+	Renderer::drawQuad2D(windowWidth / 2, windowHeight - 50, calcProgressWidth(playerEntity->getMP(), playerEntity->getMaxMP(), windowWidth / 2), 25);
 	glColor3f(0.0f, 0.0f, 0.0f);
-	renderString((windowWidth / 2) + (windowWidth / 4), windowHeight - 30, GLUT_BITMAP_HELVETICA_18, std::string("MP: ") + std::to_string(playerEntity->getMP()) + " / " + std::to_string(playerEntity->getMaxMP()));
+	Renderer::renderString((windowWidth / 2) + (windowWidth / 4), windowHeight - 30, RenderFont::BITMAP_HELVETICA_18, std::string("MP: ") + std::to_string(playerEntity->getMP()) + " / " + std::to_string(playerEntity->getMaxMP()));
 	// exp bar
 	glColor4f(0.0f, 1.0f, 0.0f, 0.5f);
-	drawQuad2D(0, windowHeight - 25, windowWidth, 25);
+	Renderer::drawQuad2D(0, windowHeight - 25, windowWidth, 25);
 	glColor4f(0.0f, 1.0f, 0.0f, 0.8f);
-	drawQuad2D(0, windowHeight - 25, calcProgressWidth(playerEXP, getEXPNeeded(playerLevel), windowWidth), 25);
+	Renderer::drawQuad2D(0, windowHeight - 25, calcProgressWidth(playerEXP, getEXPNeeded(playerLevel), windowWidth), 25);
 	glColor3f(0.0f, 0.0f, 0.0f);
-	renderString(windowWidth / 2, windowHeight - 5, GLUT_BITMAP_HELVETICA_18, std::string("EXP: ") + std::to_string(playerEXP) + " / " + std::to_string(getEXPNeeded(playerLevel)));
-	renderString(25, windowHeight - 5, GLUT_BITMAP_HELVETICA_18, std::string("Level: ") + std::to_string(playerLevel));
+	Renderer::renderString(windowWidth / 2, windowHeight - 5, RenderFont::BITMAP_HELVETICA_18, std::string("EXP: ") + std::to_string(playerEXP) + " / " + std::to_string(getEXPNeeded(playerLevel)));
+	Renderer::renderString(25, windowHeight - 5, RenderFont::BITMAP_HELVETICA_18, std::string("Level: ") + std::to_string(playerLevel));
 
 	// update and display information history side area
 	updateInformationHistory();
 
 	// draw UI windows
-	for (auto it = uiWindows.begin(); it != uiWindows.end(); it++) { it->get()->onDraw(); }
+	for (auto it = UIWindowManager::getWindows().begin(); it != UIWindowManager::getWindows().end(); it++) { it->get()->onDraw(); }
 	drawDialogueWindow();
 
 	// process mouse movement for UI windows
-	for (auto it = uiWindows.rbegin(); it != uiWindows.rend(); it++) { it->get()->onMouseMove(); }
+	for (auto it = UIWindowManager::getWindows().rbegin(); it != UIWindowManager::getWindows().rend(); it++) { it->get()->onMouseMove(); }
 
 	updateClickSelectedItem();
 	updateClickSelectedKeybind();
@@ -8157,13 +7277,13 @@ void processNormalKeys(unsigned char key, int x, int y)
 	if (keyIt != keybinds.end())
 	{
 		if (keyIt->second.type == Keybinding::Type::INTERNAL) { getKeybindingActionById(keyIt->second.actionId)->func(); }
-		else if (keyIt->second.type == Keybinding::Type::SKILL) { loadedSkills[keyIt->second.actionId]->attemptCast(); }
+		else if (keyIt->second.type == Keybinding::Type::SKILL) { SkillInformationProvider::getSkillInfo(keyIt->second.actionId)->attemptCast(); }
 		else if (keyIt->second.type == Keybinding::Type::ITEM)
 		{
 			Item* item = playerInventoryItems.findById(keyIt->second.actionId);
 			if (item) // make sure player has at least 1 of the item in their inventory to use
 			{
-				getItemInfo(item->getItemId())->onUse(playerEntity);
+				ItemInformationProvider::getItemInfo(item->getItemId())->onUse(playerEntity);
 				playerInventoryItems.removeItem(item->getPosition());
 			}
 		}
@@ -8182,8 +7302,9 @@ void processNormalKeys(unsigned char key, int x, int y)
 	{
 		int skillIndex = key - GLUT_KEY_1;
 		if (skillIndex >= (int)playerSkills.size()) { return; }
-		auto skill = loadedSkills.find(playerSkills[skillIndex]->getId());
-		if (skill != loadedSkills.end()) { skill->second->attemptCast(); }
+		SkillInfo* skill = SkillInformationProvider::getSkillInfo(playerSkills[skillIndex]->getId());
+		if (skill) { skill->attemptCast(); }
+		else { printf("[ERROR] Player attempted to cast invalid skill! (id %d)\n", playerSkills[skillIndex]->getId()); }
 	}
 
 	if (key == 27) // esc
@@ -8256,7 +7377,7 @@ void mouseButton(int button, int state, int x, int y)
 		if (state == GLUT_DOWN)
 		{
 			// window dragging
-			for (auto it = uiWindows.rbegin(); it != uiWindows.rend(); it++)
+			for (auto it = UIWindowManager::getWindows().rbegin(); it != UIWindowManager::getWindows().rend(); it++)
 			{
 				UIWindow* window = it->get();
 
@@ -8280,7 +7401,7 @@ void mouseButton(int button, int state, int x, int y)
 
 			// check UI window clicks
 			bool uiClicked = false;
-			for (auto it = uiWindows.rbegin(); it != uiWindows.rend(); it++)
+			for (auto it = UIWindowManager::getWindows().rbegin(); it != UIWindowManager::getWindows().rend(); it++)
 			{
 				UIWindow* window = it->get();
 
@@ -8288,15 +7409,16 @@ void mouseButton(int button, int state, int x, int y)
 				{
 					uiClicked = true;
 					// last clicked window should be drawn last (front of z-order)
-					if (uiWindows.back().get() != window)
+					if (UIWindowManager::getWindows().back().get() != window)
 					{
-						uiWindows.push_back(std::move(*it));
+						UIWindowManager::getWindows().push_back(std::move(*it));
 						//uiWindows.erase(std::next(it).base()); // BUGGY!!
 					}
 					break;
 				}
 			}
-			for (auto it = uiWindows.begin(); it != uiWindows.end(); ) { if (!it->get()) { it = uiWindows.erase(it); } else { it++; } } // remove nullptr if z-ordering changed; stable
+			// remove nullptr if z-ordering changed; stable
+			for (auto it = UIWindowManager::getWindows().begin(); it != UIWindowManager::getWindows().end(); ) { if (!it->get()) { it = UIWindowManager::getWindows().erase(it); } else { it++; } }
 			onDialogueWindowClick(x, y);
 
 			// drop clicked items if applicable
@@ -8308,10 +7430,10 @@ void mouseButton(int button, int state, int x, int y)
 			}
 
 			// check NPC clicks
-			for (unsigned int i = 0; i < loadedNPCs.size(); i++)
+			for (auto& npc : NpcManager::getNpcs())
 			{
 				// gen aabb
-				glm::vec3 lowerLeft(loadedNPCs[i]->position);
+				glm::vec3 lowerLeft(npc->position);
 				glm::vec3 upperRight(lowerLeft);
 				lowerLeft.x--;
 				lowerLeft.z--;
@@ -8325,7 +7447,7 @@ void mouseButton(int button, int state, int x, int y)
 				rayEnd += rayStart;
 
 				glm::vec3 rayHit;
-				if (CheckLineBox(lowerLeft, upperRight, rayStart, rayEnd, rayHit)) { registeredNPCs[loadedNPCs[i]->id]->onClick(); }
+				if (CheckLineBox(lowerLeft, upperRight, rayStart, rayEnd, rayHit)) { NpcInformationProvider::getNpcInfo(npc->id)->onClick(); }
 			}
 		}
 		else if (state == GLUT_UP)
@@ -8345,8 +7467,7 @@ void mouseButton(int button, int state, int x, int y)
 void mouseMove(int x, int y)
 {
 	// update mouse position for the ui
-	currentMousePos.x = x;
-	currentMousePos.y = y;
+	UIWindowManager::setMousePos(x, y);
 
 	/*
 	// this will only be true when the left button is down
@@ -8368,14 +7489,13 @@ void mouseMove(int x, int y)
 	}
 
 	// handle ui drag events (TODO: check active window & z-order?)
-	for (auto it = uiWindows.rbegin(); it != uiWindows.rend(); it++) { it->get()->onMouseDrag(x, y); }
+	for (auto it = UIWindowManager::getWindows().rbegin(); it != UIWindowManager::getWindows().rend(); it++) { it->get()->onMouseDrag(x, y); }
 }
 
 void mouseMovePassive(int x, int y)
 {
 	// update mouse position for the ui
-	currentMousePos.x = x;
-	currentMousePos.y = y;
+	UIWindowManager::setMousePos(x, y);
 }
 
 #pragma endregion
@@ -8405,9 +7525,9 @@ int main(int argc, char** argv)
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-	glClearColor(BYTE_TO_FLOAT_COLOR(30), BYTE_TO_FLOAT_COLOR(144), BYTE_TO_FLOAT_COLOR(255), 0.0f); // dodgerblue
-	glClearColor(0.0f, BYTE_TO_FLOAT_COLOR(191), BYTE_TO_FLOAT_COLOR(255), 0.0f); // deepskyblue
-	glClearColor(BYTE_TO_FLOAT_COLOR(100), BYTE_TO_FLOAT_COLOR(149), BYTE_TO_FLOAT_COLOR(237), 0.0f); // cornflowerblue
+	Renderer::clearColor(30, 144, 255, 0); // dodgerblue
+	Renderer::clearColor(0, 191, 255, 0); // deepskyblue
+	Renderer::clearColor(100, 149, 237, 0); // cornflowerblue
 
 	// game init
 	srand((unsigned int)time(0));
@@ -8423,53 +7543,53 @@ int main(int argc, char** argv)
 	playerEntity->addListener(wavePlayerListener.get());
 
 	// register skills
-	registerSkill(1492001, new RaycasterBasicAttackSkill());
-	registerSkill(1492002, new RaycasterPowerShotSkill());
-	registerSkill(1492003, new RaycasterBlastShotSkill());
-	registerSkill(1492004, new ChargeDashBasicSkill());
-	registerSkill(1492005, new ChargeDashRushSkill());
-	registerSkill(1492006, new ChargeDashSweepSkill());
+	SkillInformationProvider::registerSkill(1492001, new RaycasterBasicAttackSkill());
+	SkillInformationProvider::registerSkill(1492002, new RaycasterPowerShotSkill());
+	SkillInformationProvider::registerSkill(1492003, new RaycasterBlastShotSkill());
+	SkillInformationProvider::registerSkill(1492004, new ChargeDashBasicSkill());
+	SkillInformationProvider::registerSkill(1492005, new ChargeDashRushSkill());
+	SkillInformationProvider::registerSkill(1492006, new ChargeDashSweepSkill());
 
 	// register npcs
-	registerNPC(1, new TraderNPC());
-	registerNPC(2, new WaveEnterNPC());
-	registerNPC(3, new BankNPC());
+	NpcInformationProvider::registerNpc(1, new TraderNPC());
+	NpcInformationProvider::registerNpc(2, new WaveEnterNPC());
+	NpcInformationProvider::registerNpc(3, new BankNPC());
 
 	// register items
-	registerItem(1492001, new Item_BasicRaycaster());
-	registerItem(1492002, new Item_PowerRaycaster());
-	registerItem(1492003, new Item_BlastRaycaster());
-	registerItem(1492004, new Item_BasicCharger());
-	registerItem(1492005, new Item_PowerCharger());
-	registerItem(1492006, new Item_BlastCharger());
-	registerItem(2000001, new Item_RedPotion());
-	registerItem(2000002, new Item_OrangePotion());
-	registerItem(2000003, new Item_WhitePotion());
-	registerItem(2000011, new Item_BluePotion());
-	registerItem(2000012, new Item_ManaElixir());
-	registerItem(2100000, new Item_ChunkClaimer());
+	ItemInformationProvider::registerItem(1492001, new Item_BasicRaycaster());
+	ItemInformationProvider::registerItem(1492002, new Item_PowerRaycaster());
+	ItemInformationProvider::registerItem(1492003, new Item_BlastRaycaster());
+	ItemInformationProvider::registerItem(1492004, new Item_BasicCharger());
+	ItemInformationProvider::registerItem(1492005, new Item_PowerCharger());
+	ItemInformationProvider::registerItem(1492006, new Item_BlastCharger());
+	ItemInformationProvider::registerItem(2000001, new Item_RedPotion());
+	ItemInformationProvider::registerItem(2000002, new Item_OrangePotion());
+	ItemInformationProvider::registerItem(2000003, new Item_WhitePotion());
+	ItemInformationProvider::registerItem(2000011, new Item_BluePotion());
+	ItemInformationProvider::registerItem(2000012, new Item_ManaElixir());
+	ItemInformationProvider::registerItem(2100000, new Item_ChunkClaimer());
 
 	// add UI windows
-	addUIWindow(new InventoryWindow());
-	addUIWindow(new EquipmentWindow());
-	addUIWindow(new SkillsWindow());
-	addUIWindow(new ShopWindow());
-	addUIWindow(new KeybindingWindow());
-	addUIWindow(new WorldMapWindow());
-	addUIWindow(new BankWindow());
-	addUIWindow(new CraftingWindow());
-	addUIWindow(new FuckYouWindow()); // what the flying fuck the ui system crashes on click of background windows (z-order swap part) if exactly 6 windows are registered
+	UIWindowManager::addWindow(new InventoryWindow());
+	UIWindowManager::addWindow(new EquipmentWindow());
+	UIWindowManager::addWindow(new SkillsWindow());
+	UIWindowManager::addWindow(new ShopWindow());
+	UIWindowManager::addWindow(new KeybindingWindow());
+	UIWindowManager::addWindow(new WorldMapWindow());
+	UIWindowManager::addWindow(new BankWindow());
+	UIWindowManager::addWindow(new CraftingWindow());
+	UIWindowManager::addWindow(new FuckYouWindow()); // what the flying fuck the ui system crashes on click of background windows (z-order swap part) if exactly 6 windows are registered
 
 	// load keybindings
 	initKeybindings();
 
 	registerKeybindingAction(1, "Mouse Lock", []() { toggleCameraMouseLock(); });
-	registerKeybindingAction(2, "Equip Window", []() { getUIWindowByTitle("Equipment")->setVisible(!getUIWindowByTitle("Equipment")->getVisible()); });
-	registerKeybindingAction(3, "Inv. Window", []() { getUIWindowByTitle("Inventory")->setVisible(!getUIWindowByTitle("Inventory")->getVisible()); });
-	registerKeybindingAction(4, "Skill Window", []() { getUIWindowByTitle("Skills")->setVisible(!getUIWindowByTitle("Skills")->getVisible()); });
-	registerKeybindingAction(5, "World Map", []() { getUIWindowByTitle("World Map")->setVisible(!getUIWindowByTitle("World Map")->getVisible()); });
-	registerKeybindingAction(6, "Craft Window", []() { getUIWindowByTitle("Crafting")->setVisible(!getUIWindowByTitle("Crafting")->getVisible()); });
-	registerKeybindingAction(7, "Keybnd Window", []() { getUIWindowByTitle("Keybinding")->setVisible(!getUIWindowByTitle("Keybinding")->getVisible()); });
+	registerKeybindingAction(2, "Equip Window", []() { UIWindowManager::getWindowByTitle("Equipment")->setVisible(!UIWindowManager::getWindowByTitle("Equipment")->getVisible()); });
+	registerKeybindingAction(3, "Inv. Window", []() { UIWindowManager::getWindowByTitle("Inventory")->setVisible(!UIWindowManager::getWindowByTitle("Inventory")->getVisible()); });
+	registerKeybindingAction(4, "Skill Window", []() { UIWindowManager::getWindowByTitle("Skills")->setVisible(!UIWindowManager::getWindowByTitle("Skills")->getVisible()); });
+	registerKeybindingAction(5, "World Map", []() { UIWindowManager::getWindowByTitle("World Map")->setVisible(!UIWindowManager::getWindowByTitle("World Map")->getVisible()); });
+	registerKeybindingAction(6, "Craft Window", []() { UIWindowManager::getWindowByTitle("Crafting")->setVisible(!UIWindowManager::getWindowByTitle("Crafting")->getVisible()); });
+	registerKeybindingAction(7, "Keybnd Window", []() { UIWindowManager::getWindowByTitle("Keybinding")->setVisible(!UIWindowManager::getWindowByTitle("Keybinding")->getVisible()); });
 	registerKeybindingAction(101, "Item Pickup", []() { attemptItemPickup(); });
 	registerKeybindingAction(102, "Jump", []() { playerJumpRequested = true; });
 	registerKeybindingAction(103, "Place Voxel", []() { voxelEditorModify(true); });
@@ -8504,18 +7624,18 @@ int main(int argc, char** argv)
 	registerBiomeAttributes(BiomeType::MOUNTAINS, 32, 2048, 32, 112, 183, 94, 153, 68, 111, false);
 
 	// load enemy drop entries (currently assumes all drops are global)
-	addEnemyDropEntry(1492001, 100000);
-	addEnemyDropEntry(1492002, 100000);
-	addEnemyDropEntry(1492003, 100000);
-	addEnemyDropEntry(1492004, 100000);
-	addEnemyDropEntry(1492005, 100000);
-	addEnemyDropEntry(1492006, 100000);
-	addEnemyDropEntry(2000001, 300000, 1, 3);
-	addEnemyDropEntry(2000002, 300000, 1, 3);
-	addEnemyDropEntry(2000003, 300000, 1, 3);
-	addEnemyDropEntry(2000011, 300000, 1, 3);
-	addEnemyDropEntry(2000012, 300000, 1, 3);
-	addEnemyDropEntry(2100000, 50000);
+	EnemyInformationProvider::addDropEntry(1492001, 100000);
+	EnemyInformationProvider::addDropEntry(1492002, 100000);
+	EnemyInformationProvider::addDropEntry(1492003, 100000);
+	EnemyInformationProvider::addDropEntry(1492004, 100000);
+	EnemyInformationProvider::addDropEntry(1492005, 100000);
+	EnemyInformationProvider::addDropEntry(1492006, 100000);
+	EnemyInformationProvider::addDropEntry(2000001, 300000, 1, 3);
+	EnemyInformationProvider::addDropEntry(2000002, 300000, 1, 3);
+	EnemyInformationProvider::addDropEntry(2000003, 300000, 1, 3);
+	EnemyInformationProvider::addDropEntry(2000011, 300000, 1, 3);
+	EnemyInformationProvider::addDropEntry(2000012, 300000, 1, 3);
+	EnemyInformationProvider::addDropEntry(2100000, 50000);
 
 	// load map
 	loadGameMap();
