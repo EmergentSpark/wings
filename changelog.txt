@@ -1,62 +1,91 @@
 v1 (11/06/2020):
-mob spawns, basic mob movement, dealing damage, NPCs, death, waves, shops, inventory, equipment, skills, NPC dialogues, stat calculations,
-player and mob skills, voxel engine core, player stat regen, maze generation
+- mob spawns
+- basic mob movement
+- dealing damage
+- NPCs
+- death
+- waves
+- shops
+- inventory
+- equipment
+- skills
+- NPC dialogues
+- stat calculations
+- player and mob skills
+- voxel engine core
+- player stat regen
+- maze generation
 
 v2 (16/06/2020):
-a* pathfinding on mobs, voxel terrain physics, jumping
+- a* pathfinding on mobs
+- voxel terrain physics
+- jumping
 
 v3 (18/06/2020):
-3 new skills, inventory system upgrades (icon size increased, icon visuals added, tooltips w/ name and description, item stacking),
-hp and mp pots, volume surface extraction multithreaded, ui system upgrades (window dragging, universal closing, z-ordering),
-terrain generation upgrades (perlin, dungeons, trees), mob pathfinding and configuration loading temporarily disabled
+- 3 new skills
+- inventory system upgrades (icon size increased, icon visuals added, tooltips w/ name and description, item stacking)
+- hp and mp pots
+- volume surface extraction multithreaded
+- ui system upgrades (window dragging, universal closing, z-ordering)
+- terrain generation upgrades (perlin, dungeons, trees)
+- mob pathfinding and configuration loading temporarily disabled
 
 v4 (24/06/2020):
-dungeon exit constraints and wave initialization functional, mob pathfinding fixed and re-enabled, added world map window, added portals
-improved dungeon chunk loading performance, fixed tree generation & applied it globally, added towns & training grounds (basic)
-added land ownership (buildable) and wilderness (pvp + random dungeons) region boundaries (basic)
+- dungeon exit constraints and wave initialization functional
+- mob pathfinding fixed and re-enabled
+- added world map window
+- added portals
+- improved dungeon chunk loading performance
+- fixed tree generation & applied it globally
+- added towns & training grounds (basic)
+- added land ownership (buildable) and wilderness (pvp + random dungeons) region boundaries (basic)
 
 v5 (03/07/2020):
-voxel placing & destroying, land ownership, inventory item movement, banks
+- voxel placing & destroying
+- land ownership
+- inventory item movement
+- banks
 
 v6 (01/08/2020):
-dropping inventory items, crafting, keybinding window, equipment window upgrades
+- dropping inventory items
+- crafting
+- keybinding window
+- equipment window upgrades
 
 v7 (13/08/2020):
-left/right strafing, skill window icons, keybinding skills, keybinding items, tree levels & diversity
+- left/right strafing
+- skill window icons
+- keybinding skills
+- keybinding items
+- tree levels & diversity
 
 v8 (19/08/2020):
-biomes, equipment stat bonuses, item tooltips on all item display ui windows, mob scaling, dungeon difficulty multiplier
+- biomes
+- equipment stat bonuses
+- item tooltips on all item display ui windows
+- mob scaling
+- dungeon difficulty multiplier
 
 v9 (23/08/2020):
-mob drop diversity, a few more mobs, different dungeon themes, wilderness tier separation, item drop on death at second wilderness tier,
-actual item icons display for drops, potion tiers
+- mob drop diversity
+- a few more mobs
+- different dungeon themes
+- wilderness tier separation
+- item drop on death at second wilderness tier
+- actual item icons display for drops
+- potion tiers
 
 v10 (26/08/2020):
-periodic random wilderness town spawns, completed wilderness dungeon terrain periodic regeneration after prolonged chunk inactivity,
-increased dungeon difficulty based on distance from base towns, world map portal names clickable to shift map view
+- periodic random wilderness town spawns
+- completed wilderness dungeon terrain periodic regeneration after prolonged chunk inactivity
+- increased dungeon difficulty based on distance from base towns
+- world map portal names clickable to shift map view
 
 v11 (29/08/2020):
-land ownership expiration, land ownership duration extension, land ownership information display, started massive code cleanup & organization
+- land ownership expiration
+- land ownership duration extension
+- land ownership information display
+- started massive code cleanup & organization
 
-DONE BUT DISABLED:
-Maple map XML wz foothold and layout voxel mapping with depth expansion and dynamic noise, portals, switching maps, ropes/ladders (render only)
-
-CORE TODO:
-finish massive code cleanup & organization
-
-BONUS TODO:
-expand base town set structure and content, add mob towers w/ level tiers (progression & growth mechanics up to very high lvls)
-wave boss, skill scaling
-buffs, debuffs, stunning, snaring, slowing, mob stat regen
-inventory sorting, target location/object tracking
-tutorial npc
-minecraft texture pack support
-add many crafting materials, add many recipes (from minecraft), recipe book
-held items, chests
-currency, selling items to npc shops, player shops
-third person camera, character visual display, equipment physical display on character
-
-OTHER STUFF:
-graphics optimizations, networking, buddies, parties, guilds
-Map biome, noise, and XML wz mapping and depth expansion generation upgrades
-Equipment and item voxel mapping generation & UI windows
+v12 (01/09/2020):
+- a couple bugfixes for recent changes

@@ -2709,7 +2709,7 @@ void chunkSurfaceExtractProc(VolumeChunk* chunk)
 void onChunkLoad(const glm::ivec3& pos, VolumeChunk* chunk)
 {
 	// regen ex-dungeon chunks after 24 hours of inactivity. technically, this should check if the dungeon has been completed yet or not
-	if (chunk->mLastVisited + (1000 * 60 * 60 * 24) < Tools::currentTimeMillis() && chunk->mDungeon)
+	if (chunk->mLastVisited != 0 && chunk->mLastVisited + (1000 * 60 * 60 * 24) < Tools::currentTimeMillis() && chunk->mDungeon)
 	{
 		chunk->mNeedsRegeneration = true;
 		chunk->mVolume->reset();
@@ -6174,7 +6174,8 @@ public:
 		}
 
 		// mark as a dungeon generated chunk
-		mChunks[glm::ivec3(x, y, z)]->mDungeon = true;
+		// TODO: ensure chunk is actually created before doing this
+		//mChunks[glm::ivec3(x, y, z)]->mDungeon = true;
 	}
 
 	int getDifficulty() { return mDifficulty; }

@@ -1,0 +1,29 @@
+- finish massive code cleanup & organization
+- expand base town set structure and content, add mob towers w/ level tiers (progression & growth mechanics up to very high lvls)
+- wave boss
+- skill scaling
+- buffs, debuffs, stunning, snaring, slowing
+- mob stat regen
+- inventory sorting
+- target location/object tracking
+- tutorial npc
+- minecraft texture pack support
+- add many crafting materials, add many recipes (can refer to minecraft), recipe book
+- held items (+ui for it)
+- chests
+- currency, selling items to npc shops
+- player shops
+- third person camera
+- character visual display
+- equipment physical display on character
+- graphics optimizations
+- networking
+- buddies, parties, guilds
+- equipment and item voxel mapping generation & ui windows
+- map biome, noise, and xml wz mapping and depth expansion generation upgrades
+
+DONE BUT DISABLED:
+- Maple map XML wz foothold and layout voxel mapping with depth expansion and dynamic noise
+- Loading + rendering xml wz portals
+- Switching maps from xml wz
+- Loading + rendering xml wz ropes/ladders
